@@ -1,0 +1,6 @@
+{
+  "name": "DataGuard",
+  "description": "Mobile data usage tracking on Android with real-time analytics, per-app monitor, and smart alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
