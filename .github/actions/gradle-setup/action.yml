@@ -1,13 +1,55 @@
-name: gradle-setup
-description: Setup Java and Gradle
-runs:
-  using: "composite"
+name: Build on push or PR
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096M -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
     steps:
-        - name: Setup Java
-              uses: actions/setup-java@v4.0.0
-                    with:
-                            java-version: "17"
-                                    distribution: "temurin"
-                                        - name: Setup Gradle
-                                              uses: gradle/actions/setup-gradle@v5.0.0
-                                              
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+      - name: Run unit tests
+        run: ./gradlew jvmTest
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: "**/build/reports/tests/"
+
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+      - name: Build Android debug APK
+        run: ./gradlew :app:assembleDebug
+      - name: Upload Android debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: app/build/outputs/apk/debug/*.apk
