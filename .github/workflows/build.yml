@@ -1,35 +1,12 @@
-name: Build APK
+name: Build
 
 on:
   push:
+    branches: [ main ]
+  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
 env:
   GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096M -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
 
-jobs:
-  build-android:
-    name: Build Android APK
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Gradle setup
-        uses: ./.github/actions/gradle-setup
-
-      - name: Create Gradle wrapper
-        run: gradle wrapper
-
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apk
-          path: app/build/outputs/apk/debug/*.apk
