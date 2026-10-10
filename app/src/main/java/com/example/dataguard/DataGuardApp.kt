@@ -3,6 +3,7 @@ package com.example.dataguard
 import android.app.Application
 import com.example.dataguard.data.database.DataGuardDatabase
 import com.example.dataguard.data.repository.DataRepository
+import com.example.dataguard.domain.usecase.AppQuotaManager
 import com.example.dataguard.domain.usecase.BlockAppDataUseCase
 import com.example.dataguard.domain.usecase.DetectIdleUseCase
 import com.example.dataguard.domain.usecase.GetUsageStatsUseCase
@@ -35,6 +36,9 @@ class DataGuardApp : Application() {
     lateinit var getUsageStatsUseCase: GetUsageStatsUseCase
         private set
 
+    val networkStatsHelper: com.example.dataguard.domain.usecase.NetworkStatsHelper
+        get() = getUsageStatsUseCase.networkStatsHelper
+
     lateinit var toggleMobileDataUseCase: ToggleMobileDataUseCase
         private set
 
@@ -42,6 +46,24 @@ class DataGuardApp : Application() {
         private set
 
     lateinit var detectIdleUseCase: DetectIdleUseCase
+        private set
+
+    lateinit var appQuotaManager: AppQuotaManager
+        private set
+
+    lateinit var firewallEngine: com.example.dataguard.vpn.engine.FirewallEngine
+        private set
+
+    lateinit var domainFlowTracker: com.example.dataguard.vpn.engine.DomainFlowTracker
+        private set
+
+    lateinit var trafficAccountingEngine: com.example.dataguard.vpn.engine.TrafficAccountingEngine
+        private set
+
+    lateinit var packetProcessor: com.example.dataguard.vpn.engine.PacketProcessor
+        private set
+
+    lateinit var vpnSessionManager: com.example.dataguard.vpn.VpnSessionManager
         private set
 
     var dailyLimitMB: Long = 1000L
@@ -59,24 +81,55 @@ class DataGuardApp : Application() {
         database = DataGuardDatabase.getInstance(this)
         repository = DataRepository(
             usageDao = database.usageDao(),
+            appNetworkUsageDao = database.appNetworkUsageDao(),
             blockedAppDao = database.blockedAppDao(),
             appLimitDao = database.appLimitDao(),
-            dataToggleHistoryDao = database.dataToggleHistoryDao()
+            dataToggleHistoryDao = database.dataToggleHistoryDao(),
+            quotaBreachEventDao = database.quotaBreachEventDao(),
+            blockedTrafficEventDao = database.blockedTrafficEventDao(),
+            networkFlowDao = database.networkFlowDao(),
+            domainRuleDao = database.domainRuleDao()
         )
 
         notificationHelper = NotificationHelper(this)
         permissionHelper = PermissionHelper(this)
         csvExporter = CsvExporter(this)
 
-        getUsageStatsUseCase = GetUsageStatsUseCase(this, repository)
+        getUsageStatsUseCase = GetUsageStatsUseCase(this, repository, permissionHelper)
         toggleMobileDataUseCase = ToggleMobileDataUseCase(this, repository)
         blockAppDataUseCase = BlockAppDataUseCase(this, repository)
         detectIdleUseCase = DetectIdleUseCase(this)
 
-        // Seed realistic historical records if first run
+        appQuotaManager = AppQuotaManager(
+            context = this,
+            repository = repository,
+            networkStatsHelper = networkStatsHelper,
+            blockAppDataUseCase = blockAppDataUseCase,
+            notificationHelper = notificationHelper
+        )
+
+        firewallEngine = com.example.dataguard.vpn.engine.FirewallEngine(repository = repository)
+        trafficAccountingEngine = com.example.dataguard.vpn.engine.TrafficAccountingEngine()
+        domainFlowTracker = com.example.dataguard.vpn.engine.DomainFlowTracker(
+            context = this,
+            repository = repository
+        )
+        packetProcessor = com.example.dataguard.vpn.engine.PacketProcessor(
+            accountingEngine = trafficAccountingEngine,
+            firewallEngine = firewallEngine,
+            flowTracker = domainFlowTracker
+        )
+        vpnSessionManager = com.example.dataguard.vpn.VpnSessionManager(
+            context = this,
+            firewallEngine = firewallEngine,
+            trafficAccountingEngine = trafficAccountingEngine,
+            packetProcessor = packetProcessor
+        )
+
+        // Capture initial telemetry on startup
         CoroutineScope(Dispatchers.IO).launch {
-            getUsageStatsUseCase.seedHistoricalDataIfEmpty()
-            getUsageStatsUseCase("daily")
+            getUsageStatsUseCase(com.example.dataguard.domain.model.TimeRangeSelection.today())
+            appQuotaManager.checkAndEnforceAllLimits()
         }
 
         // Start background monitor service

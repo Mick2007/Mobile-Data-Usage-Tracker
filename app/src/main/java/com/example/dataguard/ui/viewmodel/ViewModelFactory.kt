@@ -20,19 +20,34 @@ object ViewModelFactory : ViewModelProvider.Factory {
                 AppsViewModel(
                     getUsageStatsUseCase = app.getUsageStatsUseCase,
                     blockAppDataUseCase = app.blockAppDataUseCase,
-                    repository = app.repository
+                    repository = app.repository,
+                    appQuotaManager = app.appQuotaManager
                 ) as T
             }
             modelClass.isAssignableFrom(StatsViewModel::class.java) -> {
                 StatsViewModel(
                     repository = app.repository,
-                    csvExporter = app.csvExporter
+                    csvExporter = app.csvExporter,
+                    networkStatsHelper = app.networkStatsHelper,
+                    permissionHelper = app.permissionHelper
                 ) as T
             }
             modelClass.isAssignableFrom(SettingsViewModel::class.java) -> {
                 SettingsViewModel(
                     repository = app.repository,
                     permissionHelper = app.permissionHelper
+                ) as T
+            }
+            modelClass.isAssignableFrom(FirewallViewModel::class.java) -> {
+                FirewallViewModel(
+                    repository = app.repository,
+                    blockAppDataUseCase = app.blockAppDataUseCase,
+                    getUsageStatsUseCase = app.getUsageStatsUseCase
+                ) as T
+            }
+            modelClass.isAssignableFrom(WebsitesViewModel::class.java) -> {
+                WebsitesViewModel(
+                    repository = app.repository
                 ) as T
             }
             else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")

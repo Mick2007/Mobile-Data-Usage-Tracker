@@ -50,6 +50,16 @@ class NotificationHelper(
                 description = "Notifies when mobile data is paused to conserve battery and bandwidth"
             }
             notificationManager.createNotificationChannel(idleChannel)
+
+            val vpnChannel = NotificationChannel(
+                VPN_CHANNEL_ID,
+                "DataGuard Local VPN",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Persistent indicator for on-device local firewall and network protection"
+                setShowBadge(false)
+            }
+            notificationManager.createNotificationChannel(vpnChannel)
         }
     }
 
@@ -145,14 +155,148 @@ class NotificationHelper(
         notificationManager.notify(APP_USAGE_NOTIFICATION_ID, notification)
     }
 
+    fun showAppQuotaWarningNotification(
+        appName: String,
+        packageName: String,
+        usedBytes: Long,
+        limitBytes: Long,
+        thresholdPercent: Int
+    ) {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            100 + (packageName.hashCode() and 0x7FFF),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val usedFormatted = DataFormatter.formatBytes(usedBytes)
+        val limitFormatted = DataFormatter.formatBytes(limitBytes)
+        val remainingFormatted = DataFormatter.formatBytes(maxOf(0L, limitBytes - usedBytes))
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle("⚠️ Quota Warning: $appName")
+            .setContentText("$appName reached $thresholdPercent% of quota ($usedFormatted / $limitFormatted)")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("$appName has reached $thresholdPercent% of its quota limit.\nUsed: $usedFormatted of $limitFormatted\nRemaining: $remainingFormatted before limit action.")
+            )
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+
+        notificationManager.notify(2000 + (packageName.hashCode() and 0x7FFF), notification)
+    }
+
+    fun showAppQuotaExceededNotification(
+        appName: String,
+        packageName: String,
+        usedBytes: Long,
+        limitBytes: Long,
+        actionTaken: String
+    ) {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            200 + (packageName.hashCode() and 0x7FFF),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val usedFormatted = DataFormatter.formatBytes(usedBytes)
+        val limitFormatted = DataFormatter.formatBytes(limitBytes)
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle("🛑 Quota Limit Reached: $appName")
+            .setContentText("$appName exceeded $limitFormatted quota ($actionTaken)")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("$appName has consumed $usedFormatted, exceeding its $limitFormatted quota limit.\nEnforcement Action: $actionTaken.")
+            )
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+
+        notificationManager.notify(3000 + (packageName.hashCode() and 0x7FFF), notification)
+    }
+
+    fun createVpnForegroundNotification(
+        statusText: String = "Local Firewall Active",
+        subText: String = "Monitoring traffic on-device",
+        stopIntent: PendingIntent? = null
+    ): Notification {
+        val appIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            201,
+            appIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, VPN_CHANNEL_ID)
+            .setContentTitle(statusText)
+            .setContentText(subText)
+            .setSmallIcon(android.R.drawable.stat_sys_upload_done)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+
+        if (stopIntent != null) {
+            builder.addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Stop VPN",
+                stopIntent
+            )
+        }
+
+        return builder.build()
+    }
+
+    fun showVpnRevokedNotification(reason: String = "VPN disconnected by system or another VPN connected") {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            202,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle("🛡️ DataGuard VPN Inactive")
+            .setContentText(reason)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+
+        notificationManager.notify(VPN_REVOKED_NOTIFICATION_ID, notification)
+    }
+
     companion object {
         const val FOREGROUND_CHANNEL_ID = "dataguard_foreground"
         const val ALERT_CHANNEL_ID = "dataguard_alerts"
         const val IDLE_CHANNEL_ID = "dataguard_idle"
+        const val VPN_CHANNEL_ID = "dataguard_vpn"
 
         const val FOREGROUND_NOTIFICATION_ID = 1001
         const val HIGH_USAGE_NOTIFICATION_ID = 1002
         const val IDLE_NOTIFICATION_ID = 1003
         const val APP_USAGE_NOTIFICATION_ID = 1004
+        const val VPN_NOTIFICATION_ID = 2001
+        const val VPN_REVOKED_NOTIFICATION_ID = 2002
     }
 }

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.dataguard.DataGuardApp
 import com.example.dataguard.data.entity.UsageEntity
 import com.example.dataguard.data.repository.DataRepository
+import com.example.dataguard.domain.model.TimeRangeSelection
 import com.example.dataguard.domain.usecase.GetUsageStatsUseCase
 import com.example.dataguard.domain.usecase.ToggleMobileDataUseCase
 import com.example.dataguard.service.DataMonitorService
@@ -38,6 +39,12 @@ class DashboardViewModel(
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
+    private val _hasUsageStatsPermission = MutableStateFlow(true)
+    val hasUsageStatsPermission: StateFlow<Boolean> = _hasUsageStatsPermission.asStateFlow()
+
+    private val _isFromNetworkStats = MutableStateFlow(true)
+    val isFromNetworkStats: StateFlow<Boolean> = _isFromNetworkStats.asStateFlow()
+
     val liveTxSpeed: StateFlow<Long> = DataMonitorService.liveTxSpeed
     val liveRxSpeed: StateFlow<Long> = DataMonitorService.liveRxSpeed
 
@@ -51,8 +58,14 @@ class DashboardViewModel(
         get() = DataGuardApp.instance.monthlyLimitMB
 
     init {
+        checkPermission()
         loadData()
         observeDatabase()
+    }
+
+    fun checkPermission() {
+        val perm = DataGuardApp.instance.permissionHelper.hasPackageUsageStatsPermission()
+        _hasUsageStatsPermission.value = perm
     }
 
     private fun observeDatabase() {
@@ -81,10 +94,17 @@ class DashboardViewModel(
     fun loadData() {
         viewModelScope.launch {
             _isLoading.value = true
+            checkPermission()
             try {
-                getUsageStatsUseCase("daily")
-                val usage = repository.getLatestUsage().firstOrNull()
-                _latestUsage.value = usage
+                when (val result = getUsageStatsUseCase(TimeRangeSelection.today())) {
+                    is GetUsageStatsUseCase.Result.Success -> {
+                        _latestUsage.value = result.usage
+                        _isFromNetworkStats.value = result.isFromNetworkStatsManager
+                    }
+                    is GetUsageStatsUseCase.Result.Error -> {
+                        _userMessage.value = result.exception.message
+                    }
+                }
             } catch (e: Exception) {
                 _userMessage.value = e.message
             } finally {
@@ -109,7 +129,6 @@ class DashboardViewModel(
     fun simulateLiveTraffic() {
         viewModelScope.launch {
             _userMessage.value = "⚡ Simulating active cellular data burst..."
-            // Add a simulated data entry to demo live graphs & alerts
             val simulatedTx = (15L * 1024 * 1024)
             val simulatedRx = (85L * 1024 * 1024)
             val prev = _latestUsage.value
@@ -117,13 +136,15 @@ class DashboardViewModel(
                 timestamp = System.currentTimeMillis(),
                 totalMobileTx = (prev?.totalMobileTx ?: 0L) + simulatedTx,
                 totalMobileRx = (prev?.totalMobileRx ?: 0L) + simulatedRx,
+                totalWifiTx = prev?.totalWifiTx ?: (12L * 1024 * 1024),
+                totalWifiRx = prev?.totalWifiRx ?: (48L * 1024 * 1024),
                 topAppsJson = prev?.topAppsJson ?: "",
                 period = "daily"
             )
             repository.insertUsage(newUsage)
             _latestUsage.value = newUsage
             DataGuardApp.instance.notificationHelper.showHighUsageNotification(
-                (newUsage.totalMobileTx + newUsage.totalMobileRx),
+                newUsage.totalMobileBytes,
                 DataGuardApp.instance.dailyLimitBytes,
                 "Daily"
             )
@@ -134,22 +155,65 @@ class DashboardViewModel(
         _userMessage.value = null
     }
 
-    fun getTotalDailyUsageMB(): Double {
+    fun getTotalDailyMobileMB(): Double {
         val latest = _latestUsage.value
-        val listTotal = _dailyUsage.value.sumOf { it.totalMobileTx + it.totalMobileRx }
+        val listTotal = _dailyUsage.value.sumOf { it.totalMobileBytes }
         val bytes = if (latest != null) {
-            maxOf(latest.totalMobileTx + latest.totalMobileRx, listTotal)
+            maxOf(latest.totalMobileBytes, listTotal)
         } else listTotal
         return bytes / (1024.0 * 1024.0)
     }
 
+    fun getTotalDailyWifiMB(): Double {
+        val latest = _latestUsage.value
+        val listTotal = _dailyUsage.value.sumOf { it.totalWifiBytes }
+        val bytes = if (latest != null) {
+            maxOf(latest.totalWifiBytes, listTotal)
+        } else listTotal
+        return bytes / (1024.0 * 1024.0)
+    }
+
+    fun getTotalDailyUsageMB(): Double = getTotalDailyMobileMB()
+
     fun getTotalWeeklyUsageMB(): Double {
-        val total = _weeklyUsage.value.sumOf { it.totalMobileTx + it.totalMobileRx }
+        val total = _weeklyUsage.value.sumOf { it.totalMobileBytes }
         return (total.coerceAtLeast((getTotalDailyUsageMB() * 1024 * 1024).toLong())) / (1024.0 * 1024.0)
     }
 
+    fun getTotalWeeklyWifiMB(): Double {
+        val total = _weeklyUsage.value.sumOf { it.totalWifiBytes }
+        return (total.coerceAtLeast((getTotalDailyWifiMB() * 1024 * 1024).toLong())) / (1024.0 * 1024.0)
+    }
+
     fun getTotalMonthlyUsageMB(): Double {
-        val total = _monthlyUsage.value.sumOf { it.totalMobileTx + it.totalMobileRx }
+        val total = _monthlyUsage.value.sumOf { it.totalMobileBytes }
         return (total.coerceAtLeast((getTotalWeeklyUsageMB() * 1024 * 1024).toLong())) / (1024.0 * 1024.0)
+    }
+
+    fun getTotalMonthlyWifiMB(): Double {
+        val total = _monthlyUsage.value.sumOf { it.totalWifiBytes }
+        return (total.coerceAtLeast((getTotalDailyWifiMB() * 1024 * 1024).toLong())) / (1024.0 * 1024.0)
+    }
+
+    val vpnState: StateFlow<com.example.dataguard.vpn.model.VpnState> =
+        DataGuardApp.instance.vpnSessionManager.vpnState
+
+    fun isVpnPrepared(context: android.content.Context): Boolean =
+        DataGuardApp.instance.vpnSessionManager.isVpnPrepared(context)
+
+    fun getVpnPrepareIntent(context: android.content.Context): android.content.Intent? =
+        DataGuardApp.instance.vpnSessionManager.getPrepareIntent(context)
+
+    fun startVpn(context: android.content.Context) {
+        DataGuardApp.instance.vpnSessionManager.startVpn(context)
+    }
+
+    fun stopVpn(context: android.content.Context? = null) {
+        val ctx = context ?: DataGuardApp.instance
+        DataGuardApp.instance.vpnSessionManager.stopVpn(ctx)
+    }
+
+    fun setVpnAutoStartOnBoot(enabled: Boolean) {
+        DataGuardApp.instance.vpnSessionManager.setAutoStartOnBoot(enabled)
     }
 }

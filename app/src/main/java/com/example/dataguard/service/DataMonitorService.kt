@@ -74,12 +74,15 @@ class DataMonitorService : Service() {
 
                 // Check limits & idle every 15 seconds
                 if (now % 15000 < 3500) {
-                    app.getUsageStatsUseCase("daily")
+                    app.getUsageStatsUseCase()
 
                     val isIdle = app.detectIdleUseCase(5)
                     if (isIdle && app.isAutoIdleSaverEnabled) {
                         app.notificationHelper.showIdleNotification()
                     }
+
+                    // Check per-application data quotas & enforce policy
+                    app.appQuotaManager.checkAndEnforceAllLimits()
 
                     // Check daily threshold
                     val dailyLimitBytes = app.dailyLimitBytes

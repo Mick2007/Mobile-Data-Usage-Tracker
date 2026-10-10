@@ -10,6 +10,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -28,8 +30,10 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.dataguard.ui.screen.AppsScreen
 import com.example.dataguard.ui.screen.DashboardScreen
+import com.example.dataguard.ui.screen.FirewallScreen
 import com.example.dataguard.ui.screen.SettingsScreen
 import com.example.dataguard.ui.screen.StatsScreen
+import com.example.dataguard.ui.screen.WebsitesScreen
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -57,6 +61,8 @@ fun DataGuardNavigationHost() {
 
                 val items = listOf(
                     NavTabItem("dashboard", "Dashboard", Icons.Default.Home, "nav_dashboard"),
+                    NavTabItem("websites", "Websites", Icons.Default.Language, "nav_websites"),
+                    NavTabItem("firewall", "Firewall", Icons.Default.Security, "nav_firewall"),
                     NavTabItem("apps", "Apps", Icons.Default.Apps, "nav_apps"),
                     NavTabItem("stats", "Analytics", Icons.Default.BarChart, "nav_stats"),
                     NavTabItem("settings", "Settings", Icons.Default.Settings, "nav_settings")
@@ -90,6 +96,12 @@ fun DataGuardNavigationHost() {
         ) {
             composable("dashboard") {
                 DashboardScreen()
+            }
+            composable("websites") {
+                WebsitesScreen()
+            }
+            composable("firewall") {
+                FirewallScreen()
             }
             composable("apps") {
                 AppsScreen()
