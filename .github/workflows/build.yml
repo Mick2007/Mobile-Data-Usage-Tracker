@@ -1,4 +1,4 @@
-name: Build
+name: Build on push or PR
 
 on:
   push:
@@ -9,3 +9,64 @@ on:
 
 env:
   GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4096M -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
+
+jobs:
+  # Job 1: Run unit tests first
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Gradle setup
+        uses: ./.github/actions/gradle-setup
+      - name: Run unit tests
+        run: ./gradlew jvmTest
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: "**/build/reports/tests/"
+
+  # Job 2: Build Android debug APK (runs only after 'test' passes)
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Gradle setup
+        uses: ./.github/actions/gradle-setup
+      - name: Build Android debug APK
+        run: ./gradlew :app:assembleDebug
+      - name: Upload Android debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+  # Job 3: Build iOS simulator app (runs on macOS, after 'test' passes)
+  build-ios:
+    name: Build iOS simulator app
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Gradle setup
+        uses: ./.github/actions/gradle-setup
+      - name: Build iOS simulator app
+        run: |
+          xcodebuild build \
+            -project YourProjectName/YourProjectName.xcodeproj \
+            -configuration Debug \
+            -scheme YourProjectName \
+            -sdk iphonesimulator \
+            -derivedDataPath ./build \
+            -verbose
+      - name: Upload app folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: iphonesimulator-app
+          path: build/Build/Products/Debug-iphonesimulator/*
