@@ -30,6 +30,18 @@ interface NetworkFlowDao {
     @Query("SELECT * FROM network_flow_records WHERE domain = :domain")
     suspend fun getFlowListForDomain(domain: String): List<NetworkFlowEntity>
 
+    @Query("SELECT * FROM network_flow_records WHERE packageName = :packageName OR uid = :uid ORDER BY lastSeen DESC")
+    fun getFlowsForAppFlow(packageName: String, uid: Int): Flow<List<NetworkFlowEntity>>
+
+    @Query("SELECT * FROM network_flow_records WHERE packageName = :packageName OR uid = :uid ORDER BY lastSeen DESC")
+    suspend fun getFlowsForApp(packageName: String, uid: Int): List<NetworkFlowEntity>
+
+    @Query("SELECT * FROM network_flow_records WHERE lastSeen BETWEEN :startTime AND :endTime ORDER BY totalBytes DESC")
+    fun getFlowsInTimeRange(startTime: Long, endTime: Long): Flow<List<NetworkFlowEntity>>
+
+    @Query("SELECT * FROM network_flow_records WHERE lastSeen BETWEEN :startTime AND :endTime ORDER BY totalBytes DESC")
+    suspend fun getFlowsInTimeRangeList(startTime: Long, endTime: Long): List<NetworkFlowEntity>
+
     @Transaction
     suspend fun upsertTraffic(
         flowKey: String,

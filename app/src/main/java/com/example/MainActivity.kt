@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -31,6 +32,7 @@ import androidx.navigation.compose.rememberNavController
 import com.example.dataguard.ui.screen.AppsScreen
 import com.example.dataguard.ui.screen.DashboardScreen
 import com.example.dataguard.ui.screen.FirewallScreen
+import com.example.dataguard.ui.screen.HotspotScreen
 import com.example.dataguard.ui.screen.SettingsScreen
 import com.example.dataguard.ui.screen.StatsScreen
 import com.example.dataguard.ui.screen.WebsitesScreen
@@ -62,6 +64,7 @@ fun DataGuardNavigationHost() {
                 val items = listOf(
                     NavTabItem("dashboard", "Dashboard", Icons.Default.Home, "nav_dashboard"),
                     NavTabItem("websites", "Websites", Icons.Default.Language, "nav_websites"),
+                    NavTabItem("hotspot", "Hotspot", Icons.Default.WifiTethering, "nav_hotspot"),
                     NavTabItem("firewall", "Firewall", Icons.Default.Security, "nav_firewall"),
                     NavTabItem("apps", "Apps", Icons.Default.Apps, "nav_apps"),
                     NavTabItem("stats", "Analytics", Icons.Default.BarChart, "nav_stats"),
@@ -100,6 +103,9 @@ fun DataGuardNavigationHost() {
             composable("websites") {
                 WebsitesScreen()
             }
+            composable("hotspot") {
+                HotspotScreen()
+            }
             composable("firewall") {
                 FirewallScreen()
             }
@@ -110,7 +116,10 @@ fun DataGuardNavigationHost() {
                 StatsScreen()
             }
             composable("settings") {
-                SettingsScreen()
+                SettingsScreen(onNavigateToPlans = { navController.navigate("plans") })
+            }
+            composable("plans") {
+                com.example.dataguard.ui.screen.PlanAndAlertScreen()
             }
         }
     }

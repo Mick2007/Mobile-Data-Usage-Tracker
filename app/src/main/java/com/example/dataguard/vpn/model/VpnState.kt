@@ -13,6 +13,8 @@ data class VpnState(
     val bytesIn: Long = 0L,
     val bytesOut: Long = 0L,
     val packetsProcessed: Long = 0L,
+    val bytesAllowed: Long = 0L,
+    val bytesBlocked: Long = 0L,
     val localAddress: String? = null,
     val activeSessionName: String? = null,
     val errorMessage: String? = null,

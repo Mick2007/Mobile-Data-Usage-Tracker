@@ -84,6 +84,30 @@ class DataMonitorService : Service() {
                     // Check per-application data quotas & enforce policy
                     app.appQuotaManager.checkAndEnforceAllLimits()
 
+                    // Sync Hotspot & Tethering sessions
+                    try {
+                        app.hotspotMonitor.syncHotspotStatus()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    // Milestone 10: Evaluate Data Plan (50%, 75%, 90%, 100%) and Alerts
+                    try {
+                        app.dataPlanAlertManager.evaluatePlanAndAlerts(now)
+
+                        // Check Tethering / Hotspot threshold if active
+                        val activeHotspot = app.hotspotMonitor.activeSession.value
+                        if (activeHotspot != null) {
+                            app.dataPlanAlertManager.checkHotspotExceedsMb(activeHotspot.totalBytes, now)
+                        }
+
+                        // Check Unusual Spike (if current speed > spike threshold)
+                        val combinedSpeed = speedTx + speedRx
+                        app.dataPlanAlertManager.checkDataSpike(combinedSpeed, now = now)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
                     // Check daily threshold
                     val dailyLimitBytes = app.dailyLimitBytes
                     val totalSessionBytes = currentTx + currentRx

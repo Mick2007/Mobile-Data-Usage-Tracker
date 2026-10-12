@@ -318,6 +318,14 @@ class FirewallEngine(
             scope.launch {
                 try {
                     repo.insertBlockedTrafficEvent(event)
+                    // Milestone 10: Trigger alert notification and history record
+                    try {
+                        com.example.dataguard.DataGuardApp.instance.dataPlanAlertManager.recordFirewallBlock(
+                            appName = appName,
+                            targetDomainOrReason = reason,
+                            now = event.timestamp
+                        )
+                    } catch (_: Exception) {}
                 } catch (e: Exception) {
                     Log.w(TAG, "Could not persist blocked traffic event: ${e.message}")
                 }

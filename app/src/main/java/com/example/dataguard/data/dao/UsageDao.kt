@@ -95,6 +95,12 @@ interface BlockedTrafficEventDao {
     @Query("SELECT * FROM blocked_traffic_events WHERE uid = :uid ORDER BY timestamp DESC")
     fun getEventsForApp(uid: Int): Flow<List<BlockedTrafficEventEntity>>
 
+    @Query("SELECT * FROM blocked_traffic_events WHERE timestamp BETWEEN :startTime AND :endTime ORDER BY timestamp DESC")
+    fun getEventsInTimeRange(startTime: Long, endTime: Long): Flow<List<BlockedTrafficEventEntity>>
+
+    @Query("SELECT * FROM blocked_traffic_events WHERE timestamp BETWEEN :startTime AND :endTime ORDER BY timestamp DESC")
+    suspend fun getEventsInTimeRangeList(startTime: Long, endTime: Long): List<BlockedTrafficEventEntity>
+
     @Query("DELETE FROM blocked_traffic_events")
     suspend fun clearAllEvents()
 }

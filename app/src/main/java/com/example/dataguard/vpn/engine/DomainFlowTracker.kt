@@ -260,6 +260,20 @@ class DomainFlowTracker(
                         confidence = delta.confidence.name
                     )
                 )
+
+                // Milestone 10: Trigger alert evaluations for newly observed apps/domains and thresholds
+                try {
+                    com.example.dataguard.DataGuardApp.instance.let { app ->
+                        if (delta.packageName != "unknown" && delta.appName != "Unknown") {
+                            app.dataPlanAlertManager.notifyNewAppObserved(delta.appName, delta.packageName, delta.timestamp)
+                            app.dataPlanAlertManager.checkAppExceedsMb(delta.appName, delta.packageName, delta.uploadDelta + delta.downloadDelta, delta.timestamp)
+                        }
+                        if (!delta.domain.startsWith("Unknown")) {
+                            app.dataPlanAlertManager.notifyNewDomainObserved(delta.domain, delta.appName, delta.timestamp)
+                            app.dataPlanAlertManager.checkDomainExceedsMb(delta.domain, delta.uploadDelta + delta.downloadDelta, delta.timestamp)
+                        }
+                    }
+                } catch (_: Exception) {}
             } catch (e: Exception) {
                 Log.w(TAG, "Error upserting traffic flow: ${e.message}")
             }

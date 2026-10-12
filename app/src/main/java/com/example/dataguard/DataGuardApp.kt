@@ -66,6 +66,12 @@ class DataGuardApp : Application() {
     lateinit var vpnSessionManager: com.example.dataguard.vpn.VpnSessionManager
         private set
 
+    lateinit var hotspotMonitor: com.example.dataguard.domain.hotspot.HotspotMonitor
+        private set
+
+    lateinit var dataPlanAlertManager: com.example.dataguard.domain.plan.DataPlanAlertManager
+        private set
+
     var dailyLimitMB: Long = 1000L
     var weeklyLimitMB: Long = 7000L
     var monthlyLimitMB: Long = 30000L
@@ -88,7 +94,11 @@ class DataGuardApp : Application() {
             quotaBreachEventDao = database.quotaBreachEventDao(),
             blockedTrafficEventDao = database.blockedTrafficEventDao(),
             networkFlowDao = database.networkFlowDao(),
-            domainRuleDao = database.domainRuleDao()
+            domainRuleDao = database.domainRuleDao(),
+            hotspotSessionDao = database.hotspotSessionDao(),
+            dataPlanDao = database.dataPlanDao(),
+            notificationHistoryDao = database.notificationHistoryDao(),
+            notificationPreferencesDao = database.notificationPreferencesDao()
         )
 
         notificationHelper = NotificationHelper(this)
@@ -96,6 +106,11 @@ class DataGuardApp : Application() {
         csvExporter = CsvExporter(this)
 
         getUsageStatsUseCase = GetUsageStatsUseCase(this, repository, permissionHelper)
+        hotspotMonitor = com.example.dataguard.domain.hotspot.HotspotMonitor(
+            context = this,
+            repository = repository,
+            permissionHelper = permissionHelper
+        )
         toggleMobileDataUseCase = ToggleMobileDataUseCase(this, repository)
         blockAppDataUseCase = BlockAppDataUseCase(this, repository)
         detectIdleUseCase = DetectIdleUseCase(this)
@@ -105,6 +120,13 @@ class DataGuardApp : Application() {
             repository = repository,
             networkStatsHelper = networkStatsHelper,
             blockAppDataUseCase = blockAppDataUseCase,
+            notificationHelper = notificationHelper
+        )
+
+        dataPlanAlertManager = com.example.dataguard.domain.plan.DataPlanAlertManager(
+            context = this,
+            repository = repository,
+            networkStatsHelper = networkStatsHelper,
             notificationHelper = notificationHelper
         )
 

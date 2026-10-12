@@ -66,4 +66,6 @@ data class DomainSummary(
     val firstSeen: Long,
     val lastSeen: Long,
     val confidence: AttributionConfidence
-)
+) {
+    val associatedApps: List<String> get() = associatedAppNames
+}

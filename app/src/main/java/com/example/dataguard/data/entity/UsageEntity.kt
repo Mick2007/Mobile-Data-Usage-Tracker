@@ -149,7 +149,8 @@ data class BlockedTrafficEventEntity(
     val appName: String,
     val reason: String = "User firewall rule",
     val networkInterface: String = "ALL", // "ALL", "MOBILE", "WIFI"
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val bytesBlocked: Long = 0L
 )
 
 enum class QuotaCycleType(val label: String) {

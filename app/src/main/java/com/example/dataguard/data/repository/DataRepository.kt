@@ -5,17 +5,25 @@ import com.example.dataguard.data.dao.AppNetworkUsageDao
 import com.example.dataguard.data.dao.BlockedAppDao
 import com.example.dataguard.data.dao.BlockedTrafficEventDao
 import com.example.dataguard.data.dao.DataToggleHistoryDao
+import com.example.dataguard.data.dao.DataPlanDao
 import com.example.dataguard.data.dao.DomainRuleDao
+import com.example.dataguard.data.dao.HotspotSessionDao
 import com.example.dataguard.data.dao.NetworkFlowDao
+import com.example.dataguard.data.dao.NotificationHistoryDao
+import com.example.dataguard.data.dao.NotificationPreferencesDao
 import com.example.dataguard.data.dao.QuotaBreachEventDao
 import com.example.dataguard.data.dao.UsageDao
 import com.example.dataguard.data.entity.AppLimitEntity
 import com.example.dataguard.data.entity.AppNetworkUsageRecordEntity
 import com.example.dataguard.data.entity.BlockedAppEntity
 import com.example.dataguard.data.entity.BlockedTrafficEventEntity
+import com.example.dataguard.data.entity.DataPlanEntity
 import com.example.dataguard.data.entity.DataToggleHistoryEntity
 import com.example.dataguard.data.entity.DomainRuleEntity
+import com.example.dataguard.data.entity.HotspotSessionEntity
 import com.example.dataguard.data.entity.NetworkFlowEntity
+import com.example.dataguard.data.entity.NotificationHistoryEntity
+import com.example.dataguard.data.entity.NotificationPreferencesEntity
 import com.example.dataguard.data.entity.QuotaBreachEventEntity
 import com.example.dataguard.data.entity.UsageEntity
 import kotlinx.coroutines.flow.Flow
@@ -29,7 +37,11 @@ class DataRepository(
     private val quotaBreachEventDao: QuotaBreachEventDao,
     private val blockedTrafficEventDao: BlockedTrafficEventDao? = null,
     private val networkFlowDao: NetworkFlowDao? = null,
-    private val domainRuleDao: DomainRuleDao? = null
+    private val domainRuleDao: DomainRuleDao? = null,
+    private val hotspotSessionDao: HotspotSessionDao? = null,
+    private val dataPlanDao: DataPlanDao? = null,
+    private val notificationHistoryDao: NotificationHistoryDao? = null,
+    private val notificationPreferencesDao: NotificationPreferencesDao? = null
 ) {
     // Usage operations
     suspend fun insertUsage(usage: UsageEntity): Long = usageDao.insertUsage(usage)
@@ -88,6 +100,12 @@ class DataRepository(
 
     fun getBlockedTrafficEventsForApp(uid: Int): Flow<List<BlockedTrafficEventEntity>> =
         blockedTrafficEventDao?.getEventsForApp(uid) ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    fun getBlockedTrafficEventsInTimeRange(startTime: Long, endTime: Long): Flow<List<BlockedTrafficEventEntity>> =
+        blockedTrafficEventDao?.getEventsInTimeRange(startTime, endTime) ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun getBlockedTrafficEventsInTimeRangeList(startTime: Long, endTime: Long): List<BlockedTrafficEventEntity> =
+        blockedTrafficEventDao?.getEventsInTimeRangeList(startTime, endTime) ?: emptyList()
 
     suspend fun clearAllBlockedTrafficEvents() {
         blockedTrafficEventDao?.clearAllEvents()
@@ -176,6 +194,18 @@ class DataRepository(
     suspend fun getFlowListForDomain(domain: String): List<NetworkFlowEntity> =
         networkFlowDao?.getFlowListForDomain(domain) ?: emptyList()
 
+    fun getFlowsForAppFlow(packageName: String, uid: Int): Flow<List<NetworkFlowEntity>> =
+        networkFlowDao?.getFlowsForAppFlow(packageName, uid) ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun getFlowsForApp(packageName: String, uid: Int): List<NetworkFlowEntity> =
+        networkFlowDao?.getFlowsForApp(packageName, uid) ?: emptyList()
+
+    fun getFlowsInTimeRange(startTime: Long, endTime: Long): Flow<List<NetworkFlowEntity>> =
+        networkFlowDao?.getFlowsInTimeRange(startTime, endTime) ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun getFlowsInTimeRangeList(startTime: Long, endTime: Long): List<NetworkFlowEntity> =
+        networkFlowDao?.getFlowsInTimeRangeList(startTime, endTime) ?: emptyList()
+
     suspend fun clearAllFlows() {
         networkFlowDao?.clearAll()
     }
@@ -224,5 +254,114 @@ class DataRepository(
 
     suspend fun clearAllDomainRules() {
         domainRuleDao?.clearAll()
+    }
+
+    // ==========================================
+    // Hotspot / Tethering Session Operations
+    // ==========================================
+
+    suspend fun insertHotspotSession(session: HotspotSessionEntity): Long =
+        hotspotSessionDao?.insertSession(session) ?: -1L
+
+    suspend fun updateHotspotSession(session: HotspotSessionEntity) {
+        hotspotSessionDao?.updateSession(session)
+    }
+
+    suspend fun getActiveHotspotSession(): HotspotSessionEntity? =
+        hotspotSessionDao?.getActiveSession()
+
+    fun getActiveHotspotSessionFlow(): Flow<HotspotSessionEntity?> =
+        hotspotSessionDao?.getActiveSessionFlow() ?: kotlinx.coroutines.flow.flowOf(null)
+
+    fun getAllHotspotSessionsFlow(): Flow<List<HotspotSessionEntity>> =
+        hotspotSessionDao?.getAllSessionsFlow() ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun getAllHotspotSessions(): List<HotspotSessionEntity> =
+        hotspotSessionDao?.getAllSessions() ?: emptyList()
+
+    fun getHotspotSessionsSinceFlow(since: Long): Flow<List<HotspotSessionEntity>> =
+        hotspotSessionDao?.getSessionsSinceFlow(since) ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun getHotspotSessionsSince(since: Long): List<HotspotSessionEntity> =
+        hotspotSessionDao?.getSessionsSince(since) ?: emptyList()
+
+    suspend fun getHotspotSessionById(id: Long): HotspotSessionEntity? =
+        hotspotSessionDao?.getSessionById(id)
+
+    fun getHotspotTotalBytesSinceFlow(since: Long): Flow<Long?> =
+        hotspotSessionDao?.getTotalBytesSinceFlow(since) ?: kotlinx.coroutines.flow.flowOf(0L)
+
+    fun getHotspotUploadBytesSinceFlow(since: Long): Flow<Long?> =
+        hotspotSessionDao?.getUploadBytesSinceFlow(since) ?: kotlinx.coroutines.flow.flowOf(0L)
+
+    fun getHotspotDownloadBytesSinceFlow(since: Long): Flow<Long?> =
+        hotspotSessionDao?.getDownloadBytesSinceFlow(since) ?: kotlinx.coroutines.flow.flowOf(0L)
+
+    suspend fun closeAllActiveHotspotSessions(endTime: Long = System.currentTimeMillis()) {
+        hotspotSessionDao?.closeAllActiveSessions(endTime)
+    }
+
+    suspend fun clearAllHotspotSessions() {
+        hotspotSessionDao?.clearAll()
+    }
+
+    // ==========================================
+    // Data Plan Operations
+    // ==========================================
+
+    fun getDataPlanFlow(): Flow<DataPlanEntity?> =
+        dataPlanDao?.getPlanFlow() ?: kotlinx.coroutines.flow.flowOf(null)
+
+    suspend fun getDataPlan(): DataPlanEntity? =
+        dataPlanDao?.getPlan()
+
+    suspend fun saveOrUpdateDataPlan(plan: DataPlanEntity) {
+        dataPlanDao?.insertOrUpdatePlan(plan)
+    }
+
+    suspend fun clearDataPlan() {
+        dataPlanDao?.clearPlan()
+    }
+
+    // ==========================================
+    // Notification History Operations
+    // ==========================================
+
+    fun getNotificationHistoryFlow(): Flow<List<NotificationHistoryEntity>> =
+        notificationHistoryDao?.getAllHistoryFlow() ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    fun getNotificationHistoryByCategoryFlow(category: String): Flow<List<NotificationHistoryEntity>> =
+        notificationHistoryDao?.getHistoryByCategoryFlow(category) ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun insertNotificationHistory(item: NotificationHistoryEntity): Long =
+        notificationHistoryDao?.insertHistory(item) ?: -1L
+
+    suspend fun getRecentNotificationHistory(limit: Int = 100): List<NotificationHistoryEntity> =
+        notificationHistoryDao?.getRecentHistoryList(limit) ?: emptyList()
+
+    suspend fun markAllNotificationsAsRead() {
+        notificationHistoryDao?.markAllAsRead()
+    }
+
+    suspend fun deleteNotificationHistoryById(id: Long) {
+        notificationHistoryDao?.deleteHistoryById(id)
+    }
+
+    suspend fun clearAllNotificationHistory() {
+        notificationHistoryDao?.clearAllHistory()
+    }
+
+    // ==========================================
+    // Notification Preferences Operations
+    // ==========================================
+
+    fun getNotificationPreferencesFlow(): Flow<NotificationPreferencesEntity?> =
+        notificationPreferencesDao?.getPreferencesFlow() ?: kotlinx.coroutines.flow.flowOf(null)
+
+    suspend fun getNotificationPreferences(): NotificationPreferencesEntity? =
+        notificationPreferencesDao?.getPreferences()
+
+    suspend fun saveNotificationPreferences(preferences: NotificationPreferencesEntity) {
+        notificationPreferencesDao?.insertOrUpdatePreferences(preferences)
     }
 }

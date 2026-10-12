@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
+import com.example.dataguard.data.entity.NotificationAlertCategory
 
 class NotificationHelper(
     private val context: Context
@@ -34,7 +35,7 @@ class NotificationHelper(
 
             val alertChannel = NotificationChannel(
                 ALERT_CHANNEL_ID,
-                "Data Limit & High Usage Alerts",
+                "Data Plan & Usage Alerts",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Alerts when data consumption approaches or exceeds plan limits"
@@ -51,6 +52,15 @@ class NotificationHelper(
             }
             notificationManager.createNotificationChannel(idleChannel)
 
+            val securityChannel = NotificationChannel(
+                SECURITY_CHANNEL_ID,
+                "Firewall & Network Security Events",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Notifies when malicious, blocked, or newly observed connections occur"
+            }
+            notificationManager.createNotificationChannel(securityChannel)
+
             val vpnChannel = NotificationChannel(
                 VPN_CHANNEL_ID,
                 "DataGuard Local VPN",
@@ -63,16 +73,23 @@ class NotificationHelper(
         }
     }
 
-    fun createForegroundNotification(statsText: String = "Monitoring active data usage"): Notification {
+    private fun createActionPendingIntent(requestCode: Int, routeExtra: String? = null): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (routeExtra != null) {
+                putExtra("navigate_to", routeExtra)
+            }
         }
-        val pendingIntent = PendingIntent.getActivity(
+        return PendingIntent.getActivity(
             context,
-            0,
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+    }
+
+    fun createForegroundNotification(statsText: String = "Monitoring active data usage"): Notification {
+        val pendingIntent = createActionPendingIntent(10)
 
         return NotificationCompat.Builder(context, FOREGROUND_CHANNEL_ID)
             .setContentTitle("DataGuard Active")
@@ -84,15 +101,209 @@ class NotificationHelper(
             .build()
     }
 
-    fun showHighUsageNotification(currentBytes: Long, limitBytes: Long, period: String = "Daily") {
-        val intent = Intent(context, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            1,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+    // 1. Data Plan Threshold Alert (50%, 75%, 90%, 100%)
+    fun showPlanThresholdAlert(
+        planName: String,
+        thresholdPercent: Int,
+        usedBytes: Long,
+        totalBytes: Long
+    ) {
+        val pendingIntent = createActionPendingIntent(101, "settings")
+        val usedFormatted = DataFormatter.formatBytes(usedBytes)
+        val totalFormatted = DataFormatter.formatBytes(totalBytes)
 
+        val title = when (thresholdPercent) {
+            100 -> "🚨 Plan Exhausted: $planName at 100%"
+            90 -> "⚠️ Critical Data Alert: $planName at 90%"
+            75 -> "📊 Plan Usage Warning: $planName at 75%"
+            else -> "ℹ️ Plan Usage Notice: $planName at 50%"
+        }
+        val detail = "You have consumed $usedFormatted of your $totalFormatted allowance ($thresholdPercent%). Tap to adjust settings or restrict heavy apps."
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText("Used $usedFormatted of $totalFormatted ($thresholdPercent%)")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setSmallIcon(if (thresholdPercent >= 90) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_warning)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(if (thresholdPercent >= 90) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+            .setGroup(GROUP_DATA_ALERTS)
+            .addAction(android.R.drawable.ic_menu_preferences, "View Plan", pendingIntent)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID_PLAN_THRESHOLD + thresholdPercent, notification)
+    }
+
+    // 2. App Exceeds X MB Alert
+    fun showAppExceedsMbAlert(appName: String, packageName: String, bytesUsed: Long, thresholdMb: Long) {
+        val pendingIntent = createActionPendingIntent(102, "apps")
+        val formatted = DataFormatter.formatBytes(bytesUsed)
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle("📱 High App Usage: $appName")
+            .setContentText("$appName used $formatted, exceeding threshold of ${thresholdMb} MB")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("$appName has transferred $formatted in recent activity. Tap to review quota or block in Firewall.")
+            )
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setGroup(GROUP_DATA_ALERTS)
+            .addAction(android.R.drawable.ic_menu_view, "Manage App", pendingIntent)
+            .build()
+
+        notificationManager.notify(packageName.hashCode(), notification)
+    }
+
+    // 3. Domain Exceeds X MB Alert
+    fun showDomainExceedsMbAlert(domain: String, bytesUsed: Long, thresholdMb: Long) {
+        val pendingIntent = createActionPendingIntent(103, "websites")
+        val formatted = DataFormatter.formatBytes(bytesUsed)
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle("🌐 High Domain Traffic: $domain")
+            .setContentText("$domain transferred $formatted (limit: ${thresholdMb} MB)")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("Observed domain $domain consumed $formatted of network bandwidth. Tap to block this host.")
+            )
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setGroup(GROUP_SECURITY_ALERTS)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "View Websites", pendingIntent)
+            .build()
+
+        notificationManager.notify(domain.hashCode(), notification)
+    }
+
+    // 4. Hotspot Exceeds X MB Alert
+    fun showHotspotExceedsMbAlert(totalBytes: Long, thresholdMb: Long) {
+        val pendingIntent = createActionPendingIntent(104, "hotspot")
+        val formatted = DataFormatter.formatBytes(totalBytes)
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle("📡 Tethering Usage Spike")
+            .setContentText("Hotspot session consumed $formatted (threshold: ${thresholdMb} MB)")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("Tethering/hotspot client traffic has consumed $formatted. Tap to review hotspot sessions or disable tethering.")
+            )
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setGroup(GROUP_DATA_ALERTS)
+            .addAction(android.R.drawable.ic_menu_info_details, "Inspect Hotspot", pendingIntent)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID_HOTSPOT_ALERT, notification)
+    }
+
+    // 5. Unusual Data Spike Alert
+    fun showDataSpikeAlert(speedKbps: Long, appName: String? = null) {
+        val pendingIntent = createActionPendingIntent(105, "dashboard")
+        val speedMbText = String.format(java.util.Locale.US, "%.1f MB/s", speedKbps / 1024.0)
+
+        val text = if (appName != null) {
+            "Rapid data transmission detected from $appName at $speedMbText."
+        } else {
+            "Sudden high background data transfer rate: $speedMbText."
+        }
+
+        val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+            .setContentTitle("⚡ Unusual Network Activity Spike")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$text Tap to view live network inspector."))
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setGroup(GROUP_DATA_ALERTS)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID_SPIKE_ALERT, notification)
+    }
+
+    // 6. Newly Observed App Network Activity
+    fun showNewAppObservedAlert(appName: String, packageName: String) {
+        val pendingIntent = createActionPendingIntent(106, "apps")
+
+        val notification = NotificationCompat.Builder(context, SECURITY_CHANNEL_ID)
+            .setContentTitle("✨ New App Access: $appName")
+            .setContentText("$appName initiated network communication for the first time")
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText("Application '$appName' ($packageName) was seen transmitting data. Tap to configure firewall or limits.")
+            )
+            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setGroup(GROUP_SECURITY_ALERTS)
+            .build()
+
+        notificationManager.notify(packageName.hashCode() xor 0x55, notification)
+    }
+
+    // 7. Newly Observed Domain
+    fun showNewDomainObservedAlert(domain: String, appName: String) {
+        val pendingIntent = createActionPendingIntent(107, "websites")
+
+        val notification = NotificationCompat.Builder(context, SECURITY_CHANNEL_ID)
+            .setContentTitle("🌐 New Host Contacted: $domain")
+            .setContentText("$appName connected to new domain $domain")
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setGroup(GROUP_SECURITY_ALERTS)
+            .build()
+
+        notificationManager.notify(domain.hashCode() xor 0x77, notification)
+    }
+
+    // 8. Firewall Block Event
+    fun showFirewallBlockAlert(appName: String, targetDomainOrReason: String) {
+        val pendingIntent = createActionPendingIntent(108, "firewall")
+
+        val notification = NotificationCompat.Builder(context, SECURITY_CHANNEL_ID)
+            .setContentTitle("🛡️ Blocked by Firewall: $appName")
+            .setContentText("Traffic blocked: $targetDomainOrReason")
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setGroup(GROUP_SECURITY_ALERTS)
+            .addAction(android.R.drawable.ic_menu_info_details, "Firewall Rules", pendingIntent)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID_FIREWALL_BLOCK, notification)
+    }
+
+    // Idle notification
+    fun showIdleNotification() {
+        val pendingIntent = createActionPendingIntent(109)
+
+        val notification = NotificationCompat.Builder(context, IDLE_CHANNEL_ID)
+            .setContentTitle("DataGuard Saver Activated")
+            .setContentText("Device is idle. Data guard recommendations enabled.")
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+
+        notificationManager.notify(IDLE_NOTIFICATION_ID, notification)
+    }
+
+    // High usage daily notification (backward compatibility)
+    fun showHighUsageNotification(currentBytes: Long, limitBytes: Long, period: String = "Daily") {
+        val pendingIntent = createActionPendingIntent(110)
         val usedFormatted = DataFormatter.formatBytes(currentBytes)
         val limitFormatted = DataFormatter.formatBytes(limitBytes)
         val percent = if (limitBytes > 0) ((currentBytes.toDouble() / limitBytes) * 100).toInt() else 100
@@ -113,35 +324,8 @@ class NotificationHelper(
         notificationManager.notify(HIGH_USAGE_NOTIFICATION_ID, notification)
     }
 
-    fun showIdleNotification() {
-        val intent = Intent(context, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            2,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = NotificationCompat.Builder(context, IDLE_CHANNEL_ID)
-            .setContentTitle("DataGuard Saver Activated")
-            .setContentText("Device is idle. Data guard recommendations enabled.")
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .build()
-
-        notificationManager.notify(IDLE_NOTIFICATION_ID, notification)
-    }
-
     fun showAppWarningNotification(appName: String, bytesUsed: Long) {
-        val intent = Intent(context, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            3,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent = createActionPendingIntent(111, "apps")
 
         val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
             .setContentTitle("App Spike: $appName")
@@ -162,26 +346,16 @@ class NotificationHelper(
         limitBytes: Long,
         thresholdPercent: Int
     ) {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            100 + (packageName.hashCode() and 0x7FFF),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
+        val pendingIntent = createActionPendingIntent(112, "apps")
         val usedFormatted = DataFormatter.formatBytes(usedBytes)
         val limitFormatted = DataFormatter.formatBytes(limitBytes)
-        val remainingFormatted = DataFormatter.formatBytes(maxOf(0L, limitBytes - usedBytes))
 
         val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
-            .setContentTitle("⚠️ Quota Warning: $appName")
-            .setContentText("$appName reached $thresholdPercent% of quota ($usedFormatted / $limitFormatted)")
+            .setContentTitle("⚠️ App Quota Warning: $appName ($thresholdPercent%)")
+            .setContentText("Used $usedFormatted of $limitFormatted limit")
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("$appName has reached $thresholdPercent% of its quota limit.\nUsed: $usedFormatted of $limitFormatted\nRemaining: $remainingFormatted before limit action.")
+                    .bigText("$appName has reached $thresholdPercent% of its quota ($usedFormatted / $limitFormatted).")
             )
             .setSmallIcon(android.R.drawable.stat_notify_error)
             .setContentIntent(pendingIntent)
@@ -189,7 +363,7 @@ class NotificationHelper(
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
-        notificationManager.notify(2000 + (packageName.hashCode() and 0x7FFF), notification)
+        notificationManager.notify(packageName.hashCode() xor 0x11, notification)
     }
 
     fun showAppQuotaExceededNotification(
@@ -199,33 +373,24 @@ class NotificationHelper(
         limitBytes: Long,
         actionTaken: String
     ) {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            200 + (packageName.hashCode() and 0x7FFF),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
+        val pendingIntent = createActionPendingIntent(113, "apps")
         val usedFormatted = DataFormatter.formatBytes(usedBytes)
         val limitFormatted = DataFormatter.formatBytes(limitBytes)
 
         val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
-            .setContentTitle("🛑 Quota Limit Reached: $appName")
-            .setContentText("$appName exceeded $limitFormatted quota ($actionTaken)")
+            .setContentTitle("🛑 App Quota Exceeded: $appName")
+            .setContentText("Used $usedFormatted of $limitFormatted limit ($actionTaken)")
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("$appName has consumed $usedFormatted, exceeding its $limitFormatted quota limit.\nEnforcement Action: $actionTaken.")
+                    .bigText("$appName has exceeded its assigned limit of $limitFormatted (Used: $usedFormatted). Action enforced: $actionTaken.")
             )
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
-        notificationManager.notify(3000 + (packageName.hashCode() and 0x7FFF), notification)
+        notificationManager.notify(packageName.hashCode() xor 0x22, notification)
     }
 
     fun createVpnForegroundNotification(
@@ -233,15 +398,7 @@ class NotificationHelper(
         subText: String = "Monitoring traffic on-device",
         stopIntent: PendingIntent? = null
     ): Notification {
-        val appIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            201,
-            appIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent = createActionPendingIntent(201, "dashboard")
 
         val builder = NotificationCompat.Builder(context, VPN_CHANNEL_ID)
             .setContentTitle(statusText)
@@ -264,15 +421,7 @@ class NotificationHelper(
     }
 
     fun showVpnRevokedNotification(reason: String = "VPN disconnected by system or another VPN connected") {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            202,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent = createActionPendingIntent(202, "dashboard")
 
         val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
             .setContentTitle("🛡️ DataGuard VPN Inactive")
@@ -290,12 +439,20 @@ class NotificationHelper(
         const val FOREGROUND_CHANNEL_ID = "dataguard_foreground"
         const val ALERT_CHANNEL_ID = "dataguard_alerts"
         const val IDLE_CHANNEL_ID = "dataguard_idle"
+        const val SECURITY_CHANNEL_ID = "dataguard_security"
         const val VPN_CHANNEL_ID = "dataguard_vpn"
+
+        const val GROUP_DATA_ALERTS = "group_dataguard_data_alerts"
+        const val GROUP_SECURITY_ALERTS = "group_dataguard_security_alerts"
 
         const val FOREGROUND_NOTIFICATION_ID = 1001
         const val HIGH_USAGE_NOTIFICATION_ID = 1002
         const val IDLE_NOTIFICATION_ID = 1003
         const val APP_USAGE_NOTIFICATION_ID = 1004
+        const val NOTIFICATION_ID_PLAN_THRESHOLD = 1100
+        const val NOTIFICATION_ID_HOTSPOT_ALERT = 1201
+        const val NOTIFICATION_ID_SPIKE_ALERT = 1202
+        const val NOTIFICATION_ID_FIREWALL_BLOCK = 1203
         const val VPN_NOTIFICATION_ID = 2001
         const val VPN_REVOKED_NOTIFICATION_ID = 2002
     }

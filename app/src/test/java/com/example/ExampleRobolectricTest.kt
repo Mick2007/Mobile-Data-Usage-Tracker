@@ -92,4 +92,47 @@ class ExampleRobolectricTest {
         assertEquals("BLOCKED", events[0].enforcementAction)
         assertEquals(2100000000L, events[0].usedBytes)
     }
+
+    @Test
+    fun `test data plan and notification preferences database persistence`() = runBlocking {
+        val plan = com.example.dataguard.data.entity.DataPlanEntity(
+            id = 1L,
+            planName = "MTN Monthly Plan",
+            totalAllowanceBytes = 10L * 1024L * 1024L * 1024L,
+            rolloverBytes = 1L * 1024L * 1024L * 1024L,
+            billingCycle = com.example.dataguard.data.entity.BillingCycleType.MONTHLY.name,
+            trafficScope = com.example.dataguard.data.entity.PlanTrafficScope.MOBILE_ONLY.name,
+            warningThresholdsJson = "50,75,90,100"
+        )
+        db.dataPlanDao().insertOrUpdatePlan(plan)
+        val fetchedPlan = db.dataPlanDao().getPlan()
+        assertNotNull(fetchedPlan)
+        assertEquals("MTN Monthly Plan", fetchedPlan!!.planName)
+        assertEquals(11L * 1024L * 1024L * 1024L, fetchedPlan.totalEffectiveAllowanceBytes)
+
+        val prefs = com.example.dataguard.data.entity.NotificationPreferencesEntity(
+            id = 1L,
+            alertOn50Percent = true,
+            alertOn75Percent = true,
+            alertOn90Percent = true,
+            alertOn100Percent = true,
+            appExceedsThresholdMb = 300L
+        )
+        db.notificationPreferencesDao().insertOrUpdatePreferences(prefs)
+        val fetchedPrefs = db.notificationPreferencesDao().getPreferences()
+        assertNotNull(fetchedPrefs)
+        assertEquals(300L, fetchedPrefs!!.appExceedsThresholdMb)
+
+        val historyItem = com.example.dataguard.data.entity.NotificationHistoryEntity(
+            title = "Threshold 75% Breached",
+            message = "Consumed 7.5 GB of 10 GB",
+            category = com.example.dataguard.data.entity.NotificationAlertCategory.PLAN_THRESHOLD.name,
+            thresholdPercent = 75
+        )
+        db.notificationHistoryDao().insertHistory(historyItem)
+        val historyList = db.notificationHistoryDao().getAllHistoryFlow().first()
+        assertEquals(1, historyList.size)
+        assertEquals(75, historyList[0].thresholdPercent)
+    }
 }
+

@@ -59,6 +59,17 @@ class AppQuotaManager(
     }
 
     /**
+     * Evaluates quota status for an app UID directly by querying the repository limit.
+     */
+    suspend fun evaluateQuotaForApp(
+        uid: Int,
+        now: Long = System.currentTimeMillis()
+    ): AppQuotaCalculation? = withContext(Dispatchers.IO) {
+        val limit = repository.getAppLimit(uid) ?: return@withContext null
+        evaluateQuota(limit, now)
+    }
+
+    /**
      * Evaluates the quota and executes threshold warnings, breach recording, and firewall blocks.
      */
     suspend fun checkAndEnforceAppLimit(

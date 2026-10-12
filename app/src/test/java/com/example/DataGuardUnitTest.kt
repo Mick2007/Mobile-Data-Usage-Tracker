@@ -925,4 +925,386 @@ class DataGuardUnitTest {
         engine.updateDomainRulesFromEntities(emptyList())
         assertFalse(engine.isDomainBlocked("instagram.com"))
     }
+
+    // ==========================================
+    // STEP 8: Hotspot & Tethering Monitoring Tests
+    // ==========================================
+
+    @Test
+    fun testStep8_HotspotState_modelsAndSessionTypes() {
+        // 1. Inactive State
+        val inactiveState = com.example.dataguard.domain.hotspot.HotspotState(
+            isActive = false,
+            sessionType = "INACTIVE",
+            activeInterfaces = emptyList(),
+            stateReason = "No active tethering detected"
+        )
+        assertFalse(inactiveState.isActive)
+        assertEquals("INACTIVE", inactiveState.sessionType)
+        assertTrue(inactiveState.activeInterfaces.isEmpty())
+
+        // 2. Wi-Fi AP Active State
+        val wifiApState = com.example.dataguard.domain.hotspot.HotspotState(
+            isActive = true,
+            sessionType = "WIFI_AP",
+            activeInterfaces = listOf("ap0"),
+            stateReason = "Wi-Fi Hotspot is active (ap0)"
+        )
+        assertTrue(wifiApState.isActive)
+        assertEquals("WIFI_AP", wifiApState.sessionType)
+        assertEquals(listOf("ap0"), wifiApState.activeInterfaces)
+
+        // 3. USB Tethering Active State
+        val usbState = com.example.dataguard.domain.hotspot.HotspotState(
+            isActive = true,
+            sessionType = "USB_TETHERING",
+            activeInterfaces = listOf("rndis0"),
+            stateReason = "USB Tethering is active (rndis0)"
+        )
+        assertTrue(usbState.isActive)
+        assertEquals("USB_TETHERING", usbState.sessionType)
+    }
+
+    @Test
+    fun testStep8_HotspotSessionEntity_durationAndMetrics() {
+        val startTime = 1700000000000L
+        val endTime = startTime + (45 * 60 * 1000L) // 45 minutes
+
+        val session = com.example.dataguard.data.entity.HotspotSessionEntity(
+            id = 1,
+            startTime = startTime,
+            endTime = endTime,
+            isActive = false,
+            uploadBytes = 25 * 1024 * 1024L,   // 25 MB
+            downloadBytes = 150 * 1024 * 1024L, // 150 MB
+            totalBytes = 175 * 1024 * 1024L,    // 175 MB
+            sessionType = "WIFI_AP",
+            clientAttributionState = "Tethering traffic",
+            interfaceName = "ap0"
+        )
+
+        assertEquals(45 * 60 * 1000L, session.durationMs)
+        assertEquals(175 * 1024 * 1024L, session.totalBytes)
+        assertEquals("Tethering traffic", session.clientAttributionState)
+        assertFalse(session.isActive)
+
+        // Ongoing session
+        val ongoingSession = com.example.dataguard.data.entity.HotspotSessionEntity(
+            id = 2,
+            startTime = System.currentTimeMillis() - 5000L,
+            endTime = null,
+            isActive = true,
+            uploadBytes = 1000L,
+            downloadBytes = 4000L,
+            totalBytes = 5000L,
+            sessionType = "WIFI_AP"
+        )
+        assertTrue(ongoingSession.isActive)
+        assertTrue(ongoingSession.durationMs >= 5000L)
+    }
+
+    @Test
+    fun testStep8_TetheringTrafficSummary_attributionTransparency() {
+        val summary = com.example.dataguard.domain.hotspot.TetheringTrafficSummary(
+            uploadBytes = 5000000L,
+            downloadBytes = 20000000L,
+            totalBytes = 25000000L,
+            isFromNetworkStatsManager = true
+        )
+
+        assertEquals(25000000L, summary.totalBytes)
+        assertTrue(summary.isFromNetworkStatsManager)
+
+        // Verify Android platform limitation explanation is documented and accurate
+        val explanation = com.example.dataguard.domain.hotspot.HotspotMonitor.ANDROID_LIMITATION_EXPLANATION
+        assertTrue(explanation.contains("UID"))
+        assertTrue(explanation.contains("Tethering"))
+        assertTrue(explanation.contains("client"))
+    }
+
+    @Test
+    fun testStep8_HotspotViewModel_historyFilteringLogic() {
+        val now = System.currentTimeMillis()
+        val oneHourAgo = now - (60 * 60 * 1000L)
+        val twoDaysAgo = now - (2 * 24 * 60 * 60 * 1000L)
+        val tenDaysAgo = now - (10 * 24 * 60 * 60 * 1000L)
+
+        val sessionRecent = com.example.dataguard.data.entity.HotspotSessionEntity(
+            id = 101, startTime = oneHourAgo, endTime = now, isActive = false, totalBytes = 1000L
+        )
+        val sessionTwoDaysAgo = com.example.dataguard.data.entity.HotspotSessionEntity(
+            id = 102, startTime = twoDaysAgo, endTime = twoDaysAgo + 10000L, isActive = false, totalBytes = 2000L
+        )
+        val sessionOld = com.example.dataguard.data.entity.HotspotSessionEntity(
+            id = 103, startTime = tenDaysAgo, endTime = tenDaysAgo + 10000L, isActive = false, totalBytes = 3000L
+        )
+
+        val allSessions = listOf(sessionRecent, sessionTwoDaysAgo, sessionOld)
+
+        // Filter ALL
+        assertEquals(3, allSessions.size)
+
+        // Filter THIS_WEEK (within 7 days)
+        val thisWeekSessions = allSessions.filter { it.startTime >= now - (7L * 24 * 60 * 60 * 1000L) }
+        assertEquals(2, thisWeekSessions.size)
+        assertTrue(thisWeekSessions.contains(sessionRecent))
+        assertTrue(thisWeekSessions.contains(sessionTwoDaysAgo))
+        assertFalse(thisWeekSessions.contains(sessionOld))
+    }
+
+    // ==========================================
+    // MILESTONE 9: Network Activity Dashboard Tests
+    // ==========================================
+
+    @Test
+    fun testMilestone9_TimelineModels_pointsAndIntervals() {
+        val now = System.currentTimeMillis()
+        val point = com.example.dataguard.domain.model.NetworkTimelinePoint(
+            timestamp = now,
+            label = "14:00",
+            startTime = now - 3600000L,
+            endTime = now,
+            uploadBytes = 1200000L,
+            downloadBytes = 4800000L,
+            mobileBytes = 2000000L,
+            wifiBytes = 4000000L,
+            allowedBytes = 5500000L,
+            blockedBytes = 500000L,
+            activeApps = listOf("Chrome", "YouTube"),
+            contactedDomains = listOf("google.com", "googlevideo.com")
+        )
+
+        assertEquals(6000000L, point.totalBytes)
+        assertEquals(1200000L, point.uploadBytes)
+        assertEquals(4800000L, point.downloadBytes)
+        assertEquals(2, point.activeApps.size)
+        assertEquals(2, point.contactedDomains.size)
+    }
+
+    @Test
+    fun testMilestone9_GraphFilterAndTimeRange_enums() {
+        val filters = com.example.dataguard.domain.model.GraphFilter.values()
+        assertTrue(filters.contains(com.example.dataguard.domain.model.GraphFilter.ALL))
+        assertTrue(filters.contains(com.example.dataguard.domain.model.GraphFilter.MOBILE))
+        assertTrue(filters.contains(com.example.dataguard.domain.model.GraphFilter.WIFI))
+        assertTrue(filters.contains(com.example.dataguard.domain.model.GraphFilter.APPS))
+        assertTrue(filters.contains(com.example.dataguard.domain.model.GraphFilter.WEBSITES))
+
+        val ranges = com.example.dataguard.domain.model.DashboardTimeRange.values()
+        assertTrue(ranges.contains(com.example.dataguard.domain.model.DashboardTimeRange.TODAY))
+        assertTrue(ranges.contains(com.example.dataguard.domain.model.DashboardTimeRange.DAYS_7))
+        assertTrue(ranges.contains(com.example.dataguard.domain.model.DashboardTimeRange.DAYS_30))
+        assertTrue(ranges.contains(com.example.dataguard.domain.model.DashboardTimeRange.CUSTOM))
+    }
+
+    @Test
+    fun testMilestone9_IntervalDetails_aggregationAndAttribution() {
+        val appUsage1 = com.example.dataguard.domain.model.AppIntervalUsage(
+            appName = "YouTube",
+            packageName = "com.google.android.youtube",
+            uid = 10123,
+            uploadBytes = 200000L,
+            downloadBytes = 1800000L,
+            mobileBytes = 500000L,
+            wifiBytes = 1500000L,
+            isBlocked = false
+        )
+        val appUsage2 = com.example.dataguard.domain.model.AppIntervalUsage(
+            appName = "Tracker App",
+            packageName = "com.tracker.analytics",
+            uid = 10199,
+            uploadBytes = 50000L,
+            downloadBytes = 10000L,
+            mobileBytes = 60000L,
+            wifiBytes = 0L,
+            isBlocked = true
+        )
+
+        val domainUsage = com.example.dataguard.domain.model.DomainIntervalUsage(
+            domain = "googlevideo.com",
+            uploadBytes = 100000L,
+            downloadBytes = 1700000L,
+            connectionCount = 14,
+            associatedApps = listOf("YouTube"),
+            isBlocked = false
+        )
+
+        val intervalDetails = com.example.dataguard.domain.model.GraphIntervalDetails(
+            startTime = 1700000000000L,
+            endTime = 1700003600000L,
+            label = "12:00 - 13:00",
+            totalDataConsumed = 2060000L,
+            uploadBytes = 250000L,
+            downloadBytes = 1810000L,
+            mobileBytes = 560000L,
+            wifiBytes = 1500000L,
+            allowedBytes = 2000000L,
+            blockedBytes = 60000L,
+            activeApps = listOf(appUsage1, appUsage2),
+            contactedDomains = listOf(domainUsage),
+            blockedEvents = emptyList()
+        )
+
+        assertEquals(2, intervalDetails.activeApps.size)
+        assertEquals(1, intervalDetails.contactedDomains.size)
+        assertEquals(60000L, intervalDetails.blockedBytes)
+        assertEquals(2000000L, intervalDetails.allowedBytes)
+        assertTrue(intervalDetails.activeApps.any { it.isBlocked })
+        assertFalse(intervalDetails.activeApps.first().isBlocked)
+    }
+
+    @Test
+    fun testMilestone9_DomainSummary_associatedAppsProperty() {
+        val summary = com.example.dataguard.data.entity.DomainSummary(
+            domain = "api.github.com",
+            totalBytes = 45000L,
+            uploadBytes = 15000L,
+            downloadBytes = 30000L,
+            connectionCount = 3,
+            associatedPackages = listOf("com.github.mobile"),
+            associatedAppNames = listOf("GitHub"),
+            firstSeen = 1700000000000L,
+            lastSeen = 1700001000000L,
+            confidence = com.example.dataguard.data.entity.AttributionConfidence.HIGH
+        )
+
+        assertEquals("api.github.com", summary.domain)
+        assertEquals(listOf("GitHub"), summary.associatedApps)
+        assertEquals(listOf("com.github.mobile"), summary.associatedPackages)
+        assertEquals(com.example.dataguard.data.entity.AttributionConfidence.HIGH, summary.confidence)
+    }
+
+    // ==========================================
+    // MILESTONE 10: Data Plan & Alert System Tests
+    // ==========================================
+
+    @Test
+    fun testMilestone10_DataPlanEntity_allowanceAndThresholdParsing() {
+        val plan = com.example.dataguard.data.entity.DataPlanEntity(
+            planName = "MTN Monthly Plan",
+            totalAllowanceBytes = 10L * 1024L * 1024L * 1024L, // 10 GB
+            rolloverBytes = 2L * 1024L * 1024L * 1024L, // 2 GB rollover
+            billingCycle = com.example.dataguard.data.entity.BillingCycleType.MONTHLY.name,
+            trafficScope = com.example.dataguard.data.entity.PlanTrafficScope.MOBILE_ONLY.name,
+            warningThresholdsJson = "50,75,90,100",
+            excludedPackageNamesJson = "com.google.android.youtube, com.whatsapp"
+        )
+
+        // Verify total effective allowance includes rollover
+        assertEquals(12L * 1024L * 1024L * 1024L, plan.totalEffectiveAllowanceBytes)
+
+        // Verify warning thresholds parsed and sorted
+        val thresholds = plan.warningThresholdsList
+        assertEquals(listOf(50, 75, 90, 100), thresholds)
+
+        // Verify excluded packages parsed cleanly
+        val excluded = plan.excludedPackagesList
+        assertEquals(2, excluded.size)
+        assertTrue(excluded.contains("com.google.android.youtube"))
+        assertTrue(excluded.contains("com.whatsapp"))
+    }
+
+    @Test
+    fun testMilestone10_DataPlanCycleCalculator_cycles() {
+        val now = 1700000000000L // arbitrary fixed timestamp
+
+        // 1. Daily cycle
+        val dailyPlan = com.example.dataguard.data.entity.DataPlanEntity(
+            billingCycle = com.example.dataguard.data.entity.BillingCycleType.DAILY.name
+        )
+        val dailyWindow = com.example.dataguard.domain.plan.DataPlanCycleCalculator.calculateCycleWindow(dailyPlan, now)
+        assertTrue(dailyWindow.cycleEndTime > dailyWindow.cycleStartTime)
+        assertEquals("Tonight at Midnight", dailyWindow.formattedResetDate)
+
+        // 2. Weekly cycle
+        val weeklyPlan = com.example.dataguard.data.entity.DataPlanEntity(
+            billingCycle = com.example.dataguard.data.entity.BillingCycleType.WEEKLY.name
+        )
+        val weeklyWindow = com.example.dataguard.domain.plan.DataPlanCycleCalculator.calculateCycleWindow(weeklyPlan, now)
+        assertTrue(weeklyWindow.cycleEndTime > weeklyWindow.cycleStartTime)
+        assertEquals(7 * 24 * 60 * 60 * 1000L, weeklyWindow.cycleEndTime - weeklyWindow.cycleStartTime)
+
+        // 3. Custom days cycle (e.g. 14 days)
+        val customPlan = com.example.dataguard.data.entity.DataPlanEntity(
+            billingCycle = com.example.dataguard.data.entity.BillingCycleType.CUSTOM_DAYS.name,
+            customCycleDays = 14,
+            startTimestamp = now - (2 * 24 * 60 * 60 * 1000L) // started 2 days ago
+        )
+        val customWindow = com.example.dataguard.domain.plan.DataPlanCycleCalculator.calculateCycleWindow(customPlan, now)
+        assertTrue(customWindow.cycleEndTime > now)
+        assertEquals(14 * 24 * 60 * 60 * 1000L, customWindow.cycleEndTime - customWindow.cycleStartTime)
+    }
+
+    @Test
+    fun testMilestone10_ThresholdCalculationLogic() {
+        val totalAllowance = 10L * 1024L * 1024L * 1024L // 10 GB
+        val thresholds = listOf(50, 75, 90, 100)
+
+        // Under 50%
+        val used3Gb = 3L * 1024L * 1024L * 1024L
+        val pct3Gb = (used3Gb.toFloat() / totalAllowance.toFloat()) * 100f
+        assertEquals(30f, pct3Gb, 0.01f)
+        val reached0 = thresholds.filter { pct3Gb >= it }.maxOrNull() ?: 0
+        assertEquals(0, reached0)
+
+        // At 55% -> reaches 50% threshold
+        val used5500Mb = (5.5 * 1024 * 1024 * 1024).toLong()
+        val pct55 = (used5500Mb.toFloat() / totalAllowance.toFloat()) * 100f
+        val reached50 = thresholds.filter { pct55 >= it }.maxOrNull() ?: 0
+        assertEquals(50, reached50)
+
+        // At 78% -> reaches 75% threshold
+        val used7800Mb = (7.8 * 1024 * 1024 * 1024).toLong()
+        val pct78 = (used7800Mb.toFloat() / totalAllowance.toFloat()) * 100f
+        val reached75 = thresholds.filter { pct78 >= it }.maxOrNull() ?: 0
+        assertEquals(75, reached75)
+
+        // At 92% -> reaches 90% threshold
+        val used9200Mb = (9.2 * 1024 * 1024 * 1024).toLong()
+        val pct92 = (used9200Mb.toFloat() / totalAllowance.toFloat()) * 100f
+        val reached90 = thresholds.filter { pct92 >= it }.maxOrNull() ?: 0
+        assertEquals(90, reached90)
+
+        // At 100%+ -> reaches 100% threshold
+        val used11Gb = 11L * 1024L * 1024L * 1024L
+        val pct100 = (used11Gb.toFloat() / totalAllowance.toFloat()) * 100f
+        val reached100 = thresholds.filter { pct100 >= it }.maxOrNull() ?: 0
+        assertEquals(100, reached100)
+    }
+
+    @Test
+    fun testMilestone10_NotificationHistoryEntity_attributes() {
+        val entity = com.example.dataguard.data.entity.NotificationHistoryEntity(
+            title = "Plan Alert: MTN Monthly Plan at 75%",
+            message = "Consumed 7.5 GB of 10.0 GB (75%)",
+            category = com.example.dataguard.data.entity.NotificationAlertCategory.PLAN_THRESHOLD.name,
+            targetKey = "plan",
+            bytesObserved = (7.5 * 1024 * 1024 * 1024).toLong(),
+            thresholdPercent = 75,
+            actionTaken = "Threshold Notice"
+        )
+
+        assertEquals("Plan Alert: MTN Monthly Plan at 75%", entity.title)
+        assertEquals("PLAN_THRESHOLD", entity.category)
+        assertEquals(75, entity.thresholdPercent)
+        assertEquals("plan", entity.targetKey)
+        assertFalse(entity.isRead)
+    }
+
+    @Test
+    fun testMilestone10_NotificationPreferences_defaults() {
+        val prefs = com.example.dataguard.data.entity.NotificationPreferencesEntity()
+        assertTrue(prefs.isEnabledMaster)
+        assertTrue(prefs.alertOn50Percent)
+        assertTrue(prefs.alertOn75Percent)
+        assertTrue(prefs.alertOn90Percent)
+        assertTrue(prefs.alertOn100Percent)
+        assertTrue(prefs.alertAppExceedsMb)
+        assertEquals(250L, prefs.appExceedsThresholdMb)
+        assertTrue(prefs.alertHotspotExceedsMb)
+        assertEquals(500L, prefs.hotspotExceedsThresholdMb)
+        assertEquals(15, prefs.minAlertIntervalMinutes)
+        assertTrue(prefs.groupNotifications)
+    }
 }
+

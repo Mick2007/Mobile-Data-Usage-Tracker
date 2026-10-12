@@ -10,18 +10,26 @@ import com.example.dataguard.data.dao.AppLimitDao
 import com.example.dataguard.data.dao.AppNetworkUsageDao
 import com.example.dataguard.data.dao.BlockedAppDao
 import com.example.dataguard.data.dao.BlockedTrafficEventDao
+import com.example.dataguard.data.dao.DataPlanDao
 import com.example.dataguard.data.dao.DataToggleHistoryDao
 import com.example.dataguard.data.dao.DomainRuleDao
+import com.example.dataguard.data.dao.HotspotSessionDao
 import com.example.dataguard.data.dao.NetworkFlowDao
+import com.example.dataguard.data.dao.NotificationHistoryDao
+import com.example.dataguard.data.dao.NotificationPreferencesDao
 import com.example.dataguard.data.dao.QuotaBreachEventDao
 import com.example.dataguard.data.dao.UsageDao
 import com.example.dataguard.data.entity.AppLimitEntity
 import com.example.dataguard.data.entity.AppNetworkUsageRecordEntity
 import com.example.dataguard.data.entity.BlockedAppEntity
 import com.example.dataguard.data.entity.BlockedTrafficEventEntity
+import com.example.dataguard.data.entity.DataPlanEntity
 import com.example.dataguard.data.entity.DataToggleHistoryEntity
 import com.example.dataguard.data.entity.DomainRuleEntity
+import com.example.dataguard.data.entity.HotspotSessionEntity
 import com.example.dataguard.data.entity.NetworkFlowEntity
+import com.example.dataguard.data.entity.NotificationHistoryEntity
+import com.example.dataguard.data.entity.NotificationPreferencesEntity
 import com.example.dataguard.data.entity.QuotaBreachEventEntity
 import com.example.dataguard.data.entity.UsageEntity
 
@@ -35,9 +43,13 @@ import com.example.dataguard.data.entity.UsageEntity
         DataToggleHistoryEntity::class,
         QuotaBreachEventEntity::class,
         NetworkFlowEntity::class,
-        DomainRuleEntity::class
+        DomainRuleEntity::class,
+        HotspotSessionEntity::class,
+        DataPlanEntity::class,
+        NotificationHistoryEntity::class,
+        NotificationPreferencesEntity::class
     ],
-    version = 6,
+    version = 9,
     exportSchema = false
 )
 abstract class DataGuardDatabase : RoomDatabase() {
@@ -50,6 +62,10 @@ abstract class DataGuardDatabase : RoomDatabase() {
     abstract fun quotaBreachEventDao(): QuotaBreachEventDao
     abstract fun networkFlowDao(): NetworkFlowDao
     abstract fun domainRuleDao(): DomainRuleDao
+    abstract fun hotspotSessionDao(): HotspotSessionDao
+    abstract fun dataPlanDao(): DataPlanDao
+    abstract fun notificationHistoryDao(): NotificationHistoryDao
+    abstract fun notificationPreferencesDao(): NotificationPreferencesDao
 
     companion object {
         @Volatile
@@ -209,6 +225,108 @@ abstract class DataGuardDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS hotspot_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        startTime INTEGER NOT NULL,
+                        endTime INTEGER,
+                        isActive INTEGER NOT NULL,
+                        uploadBytes INTEGER NOT NULL,
+                        downloadBytes INTEGER NOT NULL,
+                        totalBytes INTEGER NOT NULL,
+                        sessionType TEXT NOT NULL,
+                        clientAttributionState TEXT NOT NULL,
+                        attributionExplanation TEXT NOT NULL,
+                        interfaceName TEXT NOT NULL,
+                        lastUpdated INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_hotspot_sessions_startTime ON hotspot_sessions(startTime)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_hotspot_sessions_isActive ON hotspot_sessions(isActive)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_hotspot_sessions_lastUpdated ON hotspot_sessions(lastUpdated)")
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE blocked_traffic_events ADD COLUMN bytesBlocked INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS data_plans (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        planName TEXT NOT NULL,
+                        totalAllowanceBytes INTEGER NOT NULL,
+                        rolloverBytes INTEGER NOT NULL,
+                        billingCycle TEXT NOT NULL,
+                        trafficScope TEXT NOT NULL,
+                        startTimestamp INTEGER NOT NULL,
+                        cycleStartDayOfMonth INTEGER NOT NULL,
+                        customCycleDays INTEGER NOT NULL,
+                        warningThresholdsJson TEXT NOT NULL,
+                        excludedPackageNamesJson TEXT NOT NULL,
+                        isEnabled INTEGER NOT NULL,
+                        lastNotifiedThreshold INTEGER NOT NULL,
+                        lastCycleResetTimestamp INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS notification_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        title TEXT NOT NULL,
+                        message TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        targetKey TEXT NOT NULL,
+                        bytesObserved INTEGER NOT NULL,
+                        thresholdPercent INTEGER NOT NULL,
+                        actionTaken TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        isRead INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_notification_history_timestamp ON notification_history(timestamp)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_notification_history_category ON notification_history(category)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_notification_history_targetKey ON notification_history(targetKey)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS notification_preferences (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        isEnabledMaster INTEGER NOT NULL,
+                        alertOn50Percent INTEGER NOT NULL,
+                        alertOn75Percent INTEGER NOT NULL,
+                        alertOn90Percent INTEGER NOT NULL,
+                        alertOn100Percent INTEGER NOT NULL,
+                        alertAppExceedsMb INTEGER NOT NULL,
+                        appExceedsThresholdMb INTEGER NOT NULL,
+                        alertDomainExceedsMb INTEGER NOT NULL,
+                        domainExceedsThresholdMb INTEGER NOT NULL,
+                        alertHotspotExceedsMb INTEGER NOT NULL,
+                        hotspotExceedsThresholdMb INTEGER NOT NULL,
+                        alertUnusualSpike INTEGER NOT NULL,
+                        spikeSpeedThresholdKbps INTEGER NOT NULL,
+                        alertNewlyObservedApp INTEGER NOT NULL,
+                        alertNewlyObservedDomain INTEGER NOT NULL,
+                        alertFirewallBlockEvent INTEGER NOT NULL,
+                        minAlertIntervalMinutes INTEGER NOT NULL,
+                        groupNotifications INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): DataGuardDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -216,7 +334,7 @@ abstract class DataGuardDatabase : RoomDatabase() {
                     DataGuardDatabase::class.java,
                     "dataguard_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                     .fallbackToDestructiveMigration()
                     .build().also { INSTANCE = it }
             }

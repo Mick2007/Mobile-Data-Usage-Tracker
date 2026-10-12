@@ -50,6 +50,18 @@ object ViewModelFactory : ViewModelProvider.Factory {
                     repository = app.repository
                 ) as T
             }
+            modelClass.isAssignableFrom(HotspotViewModel::class.java) -> {
+                HotspotViewModel(
+                    hotspotMonitor = app.hotspotMonitor,
+                    repository = app.repository
+                ) as T
+            }
+            modelClass.isAssignableFrom(PlanAndAlertViewModel::class.java) -> {
+                PlanAndAlertViewModel(
+                    repository = app.repository,
+                    permissionHelper = app.permissionHelper
+                ) as T
+            }
             else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
         }
     }
