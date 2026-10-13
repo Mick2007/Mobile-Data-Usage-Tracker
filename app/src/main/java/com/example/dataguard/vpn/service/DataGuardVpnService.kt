@@ -83,6 +83,8 @@ class DataGuardVpnService : VpnService() {
                 .setSession(SESSION_NAME)
                 .setMtu(1500)
                 .addAddress("10.1.10.1", 32)
+                .addDnsServer("10.1.10.2")
+                .addRoute("10.1.10.2", 32)
                 .addRoute("10.1.10.0", 24)
                 .allowBypass()
                 .setConfigureIntent(configurePendingIntent)
@@ -116,8 +118,12 @@ class DataGuardVpnService : VpnService() {
             Log.i(TAG, "DataGuard local VPN established successfully (FD: ${vpnInterface?.fd})")
             sessionManager.onServiceStarted(SESSION_NAME)
 
-            // 5. Start packet processor on established TUN interface
+            // 5. Start packet processor on established TUN interface with socket protection
             vpnInterface?.let { pfd ->
+                sessionManager.packetProcessor.context = applicationContext
+                sessionManager.packetProcessor.socketProtector = { socket ->
+                    this@DataGuardVpnService.protect(socket)
+                }
                 sessionManager.packetProcessor.start(pfd, serviceScope)
             }
 

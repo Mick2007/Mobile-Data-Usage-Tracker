@@ -1,6 +1,7 @@
 package com.example.dataguard
 
 import android.app.Application
+import android.content.Context
 import com.example.dataguard.data.database.DataGuardDatabase
 import com.example.dataguard.data.repository.DataRepository
 import com.example.dataguard.domain.usecase.AppQuotaManager
@@ -72,13 +73,74 @@ class DataGuardApp : Application() {
     lateinit var dataPlanAlertManager: com.example.dataguard.domain.plan.DataPlanAlertManager
         private set
 
-    var dailyLimitMB: Long = 1000L
-    var weeklyLimitMB: Long = 7000L
-    var monthlyLimitMB: Long = 30000L
-    var isAutoIdleSaverEnabled: Boolean = true
+    private val prefs by lazy { getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE) }
 
-    val dailyLimitBytes: Long
-        get() = dailyLimitMB * 1024L * 1024L
+    var previousDayLimitBytes: Long
+        get() = prefs.getLong(KEY_PREVIOUS_DAY_LIMIT_BYTES, DEFAULT_DAILY_LIMIT_BYTES)
+        set(value) = prefs.edit().putLong(KEY_PREVIOUS_DAY_LIMIT_BYTES, value).apply()
+
+    var dailyLimitBytes: Long
+        get() {
+            val stored = prefs.getLong(KEY_DAILY_LIMIT_BYTES, 0L)
+            return if (stored > 0L) stored else previousDayLimitBytes
+        }
+        set(value) {
+            val current = prefs.getLong(KEY_DAILY_LIMIT_BYTES, 0L)
+            if (current > 0L && current != value) {
+                previousDayLimitBytes = current
+            }
+            prefs.edit().putLong(KEY_DAILY_LIMIT_BYTES, value).apply()
+        }
+
+    fun clearDailyLimit() {
+        val current = prefs.getLong(KEY_DAILY_LIMIT_BYTES, 0L)
+        if (current > 0L) {
+            previousDayLimitBytes = current
+        }
+        prefs.edit().remove(KEY_DAILY_LIMIT_BYTES).apply()
+    }
+
+    var weeklyLimitBytes: Long
+        get() = prefs.getLong(KEY_WEEKLY_LIMIT_BYTES, DEFAULT_WEEKLY_LIMIT_BYTES)
+        set(value) = prefs.edit().putLong(KEY_WEEKLY_LIMIT_BYTES, value).apply()
+
+    var monthlyLimitBytes: Long
+        get() = prefs.getLong(KEY_MONTHLY_LIMIT_BYTES, DEFAULT_MONTHLY_LIMIT_BYTES)
+        set(value) = prefs.edit().putLong(KEY_MONTHLY_LIMIT_BYTES, value).apply()
+
+    var dailyLimitUnit: String
+        get() = prefs.getString(KEY_DAILY_LIMIT_UNIT, "MB") ?: "MB"
+        set(value) = prefs.edit().putString(KEY_DAILY_LIMIT_UNIT, value).apply()
+
+    var weeklyLimitUnit: String
+        get() = prefs.getString(KEY_WEEKLY_LIMIT_UNIT, "GB") ?: "GB"
+        set(value) = prefs.edit().putString(KEY_WEEKLY_LIMIT_UNIT, value).apply()
+
+    var monthlyLimitUnit: String
+        get() = prefs.getString(KEY_MONTHLY_LIMIT_UNIT, "GB") ?: "GB"
+        set(value) = prefs.edit().putString(KEY_MONTHLY_LIMIT_UNIT, value).apply()
+
+    var isAutoIdleSaverEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_IDLE_SAVER, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_IDLE_SAVER, value).apply()
+
+    var dailyLimitMB: Long
+        get() = dailyLimitBytes / (1024L * 1024L)
+        set(value) {
+            dailyLimitBytes = value * 1024L * 1024L
+        }
+
+    var weeklyLimitMB: Long
+        get() = weeklyLimitBytes / (1024L * 1024L)
+        set(value) {
+            weeklyLimitBytes = value * 1024L * 1024L
+        }
+
+    var monthlyLimitMB: Long
+        get() = monthlyLimitBytes / (1024L * 1024L)
+        set(value) {
+            monthlyLimitBytes = value * 1024L * 1024L
+        }
 
     override fun onCreate() {
         super.onCreate()
@@ -161,5 +223,19 @@ class DataGuardApp : Application() {
     companion object {
         lateinit var instance: DataGuardApp
             private set
+
+        const val PREFS_SETTINGS = "dataguard_settings_prefs"
+        const val KEY_DAILY_LIMIT_BYTES = "daily_limit_bytes"
+        const val KEY_PREVIOUS_DAY_LIMIT_BYTES = "previous_day_limit_bytes"
+        const val KEY_WEEKLY_LIMIT_BYTES = "weekly_limit_bytes"
+        const val KEY_MONTHLY_LIMIT_BYTES = "monthly_limit_bytes"
+        const val KEY_DAILY_LIMIT_UNIT = "daily_limit_unit"
+        const val KEY_WEEKLY_LIMIT_UNIT = "weekly_limit_unit"
+        const val KEY_MONTHLY_LIMIT_UNIT = "monthly_limit_unit"
+        const val KEY_AUTO_IDLE_SAVER = "auto_idle_saver"
+
+        const val DEFAULT_DAILY_LIMIT_BYTES: Long = 1000L * 1024L * 1024L // 1000 MB
+        val DEFAULT_WEEKLY_LIMIT_BYTES: Long = (6.8 * 1024.0 * 1024.0 * 1024.0).toLong() // 6.8 GB (7,301,444,403 bytes)
+        val DEFAULT_MONTHLY_LIMIT_BYTES: Long = (29.3 * 1024.0 * 1024.0 * 1024.0).toLong() // 29.3 GB (31,460,635,443 bytes)
     }
 }

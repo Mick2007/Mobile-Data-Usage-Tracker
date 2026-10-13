@@ -647,4 +647,139 @@ Build a complete Carrier Data Plan and Alert System allowing users to configure 
 - [PLATFORM LIMITATION] The Android OS allows apps to exclude traffic by UID; if an excluded app changes its UID during re-installation, the user should re-select the app in the excluded apps picker.
 
 ## Next Step
-- Milestone 10 is complete. Awaiting next user instructions or requirements.
+- Milestone 10 is complete. Proceed to Milestone 11.
+
+---
+
+# Milestone 11 — Editable Data Limits with MB/GB Unit Selection
+
+## Objective
+Replace the Daily, Weekly, and Monthly data limit sliders in the Control Center / Settings screen with editable numeric input fields and independent MB/GB unit dropdown selectors. Store data limits internally in canonical binary bytes, format unit conversions up to 3 decimal places without losing precision, validate input with inline error feedback, and automatically save changes to SharedPreferences.
+
+## Changes Made
+- Created `DataUnitUtils` and `DataLimitUnit` enum supporting binary byte calculations (`1 MB = 1,048,576 bytes`, `1 GB = 1,073,741,824 bytes`, `1 GB = 1024 MB`).
+- Formatted converted limit values up to 3 decimal places without redundant trailing zeros (`DecimalFormat("0.###")`).
+- Updated `DataGuardApp` to store `dailyLimitBytes`, `weeklyLimitBytes`, and `monthlyLimitBytes` as canonical `Long` byte representations in `SharedPreferences`, along with user-selected display units (`dailyLimitUnit`, `weeklyLimitUnit`, `monthlyLimitUnit`), with backward-compatible computed accessors (`dailyLimitMB`, `weeklyLimitMB`, `monthlyLimitMB`).
+- Set required defaults: Daily Limit = 1000 MB (`1,048,576,000 bytes`), Weekly Limit = 6.8 GB (`7,301,444,403 bytes`), Monthly Limit = 29.3 GB (`31,460,635,443 bytes`).
+- Updated `SettingsViewModel` with reactive state flows for canonical bytes, selected units, input text, and validation error messages, auto-saving immediately on valid input or unit toggle.
+- Created `LimitInputFieldWithUnit` composable in `SettingsScreen.kt` featuring numeric decimal inputs, compact dropdown menus for MB/GB selection, inline validation error text, live byte and unit equivalence indicators, auto-save badges, and previous day limit restore affordance.
+- Implemented previous day limit fallback: if a daily limit is not inserted (or left empty/cleared), the app automatically falls back to `previousDayLimitBytes`, preserving yesterday's active quota, and archives previous values when new ones are set.
+- Added `imePadding()` to the scrolling container in `SettingsScreen.kt` to ensure soft keyboards do not obscure numeric input fields.
+- Added comprehensive unit tests in `DataGuardUnitTest.kt` verifying binary byte conversions, unit switching without data drift (e.g. 2 GB <-> 2048 MB, 1000 MB -> 0.977 GB), 3-decimal formatting, validation rejections (empty, negative, zero, non-numeric), unit enum parsing, and previous day limit archiving and uninserted fallback logic.
+
+## Files Created
+- `app/src/main/java/com/example/dataguard/utils/DataUnitUtils.kt`
+
+## Files Modified
+- `app/src/main/java/com/example/dataguard/DataGuardApp.kt`
+- `app/src/main/java/com/example/dataguard/ui/viewmodel/SettingsViewModel.kt`
+- `app/src/main/java/com/example/dataguard/ui/screen/SettingsScreen.kt`
+- `app/src/test/java/com/example/DataGuardUnitTest.kt`
+- `docs/DATAGUARD_CHANGELOG.md`
+
+## Files Deleted
+- None
+
+## Dependencies Added
+- None
+
+## Database Changes
+- None (Canonical limits, units, and previous day limit archives are persisted in `SharedPreferences` with fallback to default constants).
+
+## Android Permissions
+- None
+
+## Features Added
+- COMPLETE: Editable numeric input fields for Daily, Weekly, and Monthly limits replacing sliders.
+- COMPLETE: Independent dropdown unit selector (MB / GB) for Daily, Weekly, and Monthly limits.
+- COMPLETE: Binary standard unit conversion (`1 GB = 1024 MB`) preserving equivalent data limits without precision drift.
+- COMPLETE: Canonical storage internally as bytes (`Long`) with external display as MB or GB.
+- COMPLETE: Automatic previous day limit fallback: if daily limit is not inserted, the previous day's limit is automatically utilized.
+- COMPLETE: Numeric decimal keyboard support (`KeyboardType.Decimal`).
+- COMPLETE: Real-time validation rejecting empty, zero, negative, and invalid text with inline error feedback.
+- COMPLETE: Auto-save immediately upon valid numeric entry or unit switch, persisted via `SharedPreferences`.
+- COMPLETE: Keyboard handling with `imePadding()` to prevent input occlusion.
+- COMPLETE: Full backwards compatibility for legacy components referencing `dailyLimitMB`, `weeklyLimitMB`, `monthlyLimitMB`.
+
+## Bugs Fixed
+- Slider granularity restriction: Sliders were restricted to discrete step sizes (100 MB, 500 MB, 1000 MB) preventing precise decimal quotas (e.g. 6.8 GB or 29.3 GB); replaced with decimal text inputs.
+- Non-persisted limits: Sliders only kept state in memory; now limits and selected units are persisted to `SharedPreferences` across app restarts.
+
+## Tests Performed
+- `testMilestone11_DataUnitUtils_binaryConversions`: Verified exact byte counts for 1000 MB, 6.8 GB, and 29.3 GB.
+- `testMilestone11_DataUnitUtils_unitSwitchingAndPreservation`: Verified 2 GB <-> 2048 MB, 1000 MB -> 0.977 GB, and lossless round-trips from canonical bytes.
+- `testMilestone11_DataUnitUtils_formattingPrecision`: Verified formatting up to 3 decimal places without redundant trailing zeros.
+- `testMilestone11_DataUnitUtils_validationRules`: Verified rejection of empty, zero, negative, and non-numeric values.
+- `testMilestone11_DataLimitUnit_parsing`: Verified string and case-insensitive unit parsing.
+- `testMilestone11_DailyLimit_fallbackToPreviousDayLimitLogic`: Verified that uninserted/empty daily limit uses previous day limit.
+- `testMilestone11_DailyLimit_archivingPreviousDayLimit`: Verified archiving of prior daily limit into `previousDayLimitBytes` upon updating.
+- Full test suite passed via `gradle :app:testDebugUnitTest` (`BUILD SUCCESSFUL`).
+
+## Manual Testing Required
+- Open Control Center / Settings screen, tap Daily Limit field, type "500", switch unit to "GB", verify display shows "0.488" and equivalence indicator updates.
+- Switch unit back to "MB", verify display restores "500".
+- Clear field or type negative number, verify inline error message displays indicating fallback to previous day limit.
+- Navigate to another tab and return, verify input values and units remain preserved.
+
+## Known Limitations
+- None
+
+## Next Step
+- Milestone 11 is complete.
+
+---
+
+# Milestone 12 — Real-Time Website Data Usage Tracking via Protected DNS Forwarding
+
+## Objective
+Fix website data usage tracking in DataGuard when the firewall/VPN is active. Enable browsers and applications to browse normally while DataGuard captures visited domains in real time, forwards queries to system network default DNS using protected sockets, enforces domain firewall rules, and visualizes visited websites with live connection counts and byte telemetry.
+
+## Changes Made
+- Created `SystemDnsResolver` utility providing:
+  - System network default DNS discovery via `ConnectivityManager.getLinkProperties(activeNetwork)?.dnsServers`, falling back to standard public resolvers (8.8.8.8, 1.1.1.1).
+  - Protected upstream UDP forwarding using `DatagramSocket` protected via `VpnService.protect(socket)`.
+  - RFC 1035 NXDOMAIN / Sinkhole response synthesis for blocked domains.
+  - Raw IPv4 + UDP packet header construction with RFC 791 one's complement header checksum calculation.
+- Enhanced `DataGuardVpnService`:
+  - Added virtual DNS endpoint `10.1.10.2` via `.addDnsServer("10.1.10.2")` and route `.addRoute("10.1.10.2", 32)`.
+  - Wired `packetProcessor.setSocketProtector` to protect upstream sockets via `VpnService.protect()`.
+- Rewrote `PacketProcessor`:
+  - Implemented real-time DNS capture loop on UDP port 53.
+  - Connected query inspection to `FirewallEngine`: immediately returns NXDOMAIN for blocked domains.
+  - Forwards allowed queries to system default DNS and writes synthesized IPv4/UDP response packets back to TUN interface `FileOutputStream`.
+  - Extracts resolved IPv4 addresses from DNS responses and registers them in `DomainFlowTracker.registerIpDomainMapping`.
+  - Records real-time query and response bytes in `DomainFlowTracker.recordDnsQuery`.
+- Enhanced `DnsQueryParser` to parse byte arrays and extract IPv4 addresses from DNS response records.
+- Enhanced `DomainFlowTracker`:
+  - `recordDnsQuery` accepts both upload and download bytes.
+  - Made `flushPendingDeltas()` public for instant UI telemetry updates.
+- Enhanced `WebsitesScreen` & `WebsitesViewModel`:
+  - Added `testTrackWebsite()` helper and "Test Website Traffic Tracking" button in empty state for immediate verification.
+
+## Files Created
+- `app/src/main/java/com/example/dataguard/vpn/engine/SystemDnsResolver.kt`
+
+## Files Modified
+- `app/src/main/java/com/example/dataguard/vpn/service/DataGuardVpnService.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/PacketProcessor.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/DnsQueryParser.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/DomainFlowTracker.kt`
+- `app/src/main/java/com/example/dataguard/ui/screen/WebsitesScreen.kt`
+- `app/src/main/java/com/example/dataguard/ui/viewmodel/WebsitesViewModel.kt`
+- `app/src/test/java/com/example/DataGuardUnitTest.kt`
+- `docs/DATAGUARD_CHANGELOG.md`
+
+## Files Deleted
+- None
+
+## Tests Performed
+- `testMilestone12_DnsQueryParsing_extractsDomain`: Verified domain extraction from RFC 1035 query bytes.
+- `testMilestone12_DnsNxDomainResponseSynthesis`: Verified synthesis of standard NXDOMAIN responses with RCODE 3.
+- `testMilestone12_Ipv4UdpPacketConstruction`: Verified IPv4 header, IHL, UDP header, ports, lengths, and IP checksum.
+
+## Known Limitations
+- Browsers configured with strict DNS-over-HTTPS (DoH) or Android Private DNS (DoT) may bypass standard port 53 DNS interception; standard DNS queries and browsers using system DNS resolution are intercepted and tracked seamlessly.
+
+## Next Step
+- Milestone 12 is complete. Ready for verification and user review.
+

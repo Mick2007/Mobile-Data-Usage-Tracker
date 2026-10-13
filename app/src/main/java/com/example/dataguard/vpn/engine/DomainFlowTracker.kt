@@ -74,7 +74,12 @@ class DomainFlowTracker(
     /**
      * Records a DNS query observation (RFC 1035 UDP 53).
      */
-    fun recordDnsQuery(queriedDomain: String, clientIp: String) {
+    fun recordDnsQuery(
+        queriedDomain: String,
+        clientIp: String,
+        uploadBytes: Long = 64L,
+        downloadBytes: Long = 128L
+    ) {
         val cleanDomain = queriedDomain.trim().lowercase()
         if (cleanDomain.isEmpty()) return
 
@@ -84,8 +89,8 @@ class DomainFlowTracker(
                 domain = cleanDomain,
                 destinationIp = "DNS-Query",
                 protocol = "DNS",
-                uploadBytes = 64L,
-                downloadBytes = 0L,
+                uploadBytes = uploadBytes,
+                downloadBytes = downloadBytes,
                 networkType = "ANY"
             ),
             forcedConfidence = AttributionConfidence.HIGH
@@ -216,7 +221,7 @@ class DomainFlowTracker(
         }
     }
 
-    private suspend fun flushPendingDeltas() {
+    suspend fun flushPendingDeltas() {
         if (pendingDeltas.isEmpty()) return
 
         val repo = repository ?: return

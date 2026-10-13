@@ -269,4 +269,21 @@ class WebsitesViewModel(
             repository.clearAllFlows()
         }
     }
+
+    /**
+     * Diagnostic helper: records test website traffic to instantly verify live domain tracking.
+     */
+    fun testTrackWebsite(testDomain: String = "wikipedia.org") {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val tracker = DataGuardApp.instance.domainFlowTracker
+            tracker.recordDnsQuery(
+                queriedDomain = testDomain,
+                clientIp = "10.1.10.1",
+                uploadBytes = 72L,
+                downloadBytes = 144L
+            )
+            tracker.registerIpDomainMapping("198.35.26.96", testDomain)
+            tracker.flushPendingDeltas()
+        }
+    }
 }

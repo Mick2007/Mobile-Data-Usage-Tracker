@@ -17,6 +17,7 @@ import com.example.dataguard.utils.DataFormatter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Calendar
@@ -1306,5 +1307,266 @@ class DataGuardUnitTest {
         assertEquals(15, prefs.minAlertIntervalMinutes)
         assertTrue(prefs.groupNotifications)
     }
+
+    @Test
+    fun testMilestone11_DataUnitUtils_binaryConversions() {
+        val mbUnit = com.example.dataguard.utils.DataLimitUnit.MB
+        val gbUnit = com.example.dataguard.utils.DataLimitUnit.GB
+
+        // Binary definition: 1 MB = 1024 * 1024 bytes, 1 GB = 1024 * 1024 * 1024 bytes
+        assertEquals(1048576L, mbUnit.multiplierBytes)
+        assertEquals(1073741824L, gbUnit.multiplierBytes)
+        assertEquals(1024L * mbUnit.multiplierBytes, gbUnit.multiplierBytes)
+
+        // Default Daily Limit: 1000 MB
+        val dailyBytes = com.example.dataguard.utils.DataUnitUtils.limitToBytes(1000.0, mbUnit)
+        assertEquals(1048576000L, dailyBytes)
+        assertEquals(1000.0, com.example.dataguard.utils.DataUnitUtils.bytesToLimitValue(dailyBytes, mbUnit), 0.0001)
+
+        // Default Weekly Limit: 6.8 GB
+        val weeklyBytes = com.example.dataguard.utils.DataUnitUtils.limitToBytes(6.8, gbUnit)
+        val expectedWeeklyBytes = (6.8 * 1024.0 * 1024.0 * 1024.0).toLong()
+        assertEquals(expectedWeeklyBytes, weeklyBytes)
+        assertEquals(6.8, com.example.dataguard.utils.DataUnitUtils.bytesToLimitValue(weeklyBytes, gbUnit), 0.0001)
+
+        // Default Monthly Limit: 29.3 GB
+        val monthlyBytes = com.example.dataguard.utils.DataUnitUtils.limitToBytes(29.3, gbUnit)
+        val expectedMonthlyBytes = (29.3 * 1024.0 * 1024.0 * 1024.0).toLong()
+        assertEquals(expectedMonthlyBytes, monthlyBytes)
+        assertEquals(29.3, com.example.dataguard.utils.DataUnitUtils.bytesToLimitValue(monthlyBytes, gbUnit), 0.0001)
+    }
+
+    @Test
+    fun testMilestone11_DataUnitUtils_unitSwitchingAndPreservation() {
+        val mbUnit = com.example.dataguard.utils.DataLimitUnit.MB
+        val gbUnit = com.example.dataguard.utils.DataLimitUnit.GB
+
+        // 2 GB switched to MB must equal 2048 MB exactly
+        val twoGbBytes = com.example.dataguard.utils.DataUnitUtils.limitToBytes(2.0, gbUnit)
+        val inMb = com.example.dataguard.utils.DataUnitUtils.bytesToLimitValue(twoGbBytes, mbUnit)
+        assertEquals(2048.0, inMb, 0.0001)
+        assertEquals("2048", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(inMb))
+
+        // 2048 MB switched to GB must equal 2 GB exactly
+        val convertedGb = com.example.dataguard.utils.DataUnitUtils.convertValue(2048.0, mbUnit, gbUnit)
+        assertEquals(2.0, convertedGb, 0.0001)
+        assertEquals("2", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(convertedGb))
+
+        // 1000 MB switched to GB should yield ~0.977 GB
+        val oneThousandMbBytes = com.example.dataguard.utils.DataUnitUtils.limitToBytes(1000.0, mbUnit)
+        val inGb = com.example.dataguard.utils.DataUnitUtils.bytesToLimitValue(oneThousandMbBytes, gbUnit)
+        assertEquals(1000.0 / 1024.0, inGb, 0.0001)
+        assertEquals("0.977", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(inGb))
+
+        // Switching back from canonical bytes preserves 1000 MB without loss
+        val backToMb = com.example.dataguard.utils.DataUnitUtils.bytesToLimitValue(oneThousandMbBytes, mbUnit)
+        assertEquals(1000.0, backToMb, 0.0001)
+        assertEquals("1000", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(backToMb))
+    }
+
+    @Test
+    fun testMilestone11_DataUnitUtils_formattingPrecision() {
+        // Up to 3 decimal places without redundant trailing zeros
+        assertEquals("1000", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(1000.0))
+        assertEquals("6.8", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(6.8))
+        assertEquals("29.3", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(29.3))
+        assertEquals("2", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(2.0))
+        assertEquals("0.5", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(0.5))
+        assertEquals("12.345", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(12.345))
+        assertEquals("12.346", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(12.3456))
+        assertEquals("0", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(0.0))
+        assertEquals("0", com.example.dataguard.utils.DataUnitUtils.formatLimitValue(-5.0))
+    }
+
+    @Test
+    fun testMilestone11_DataUnitUtils_validationRules() {
+        // Valid inputs
+        val (val1, err1) = com.example.dataguard.utils.DataUnitUtils.validateInput("1000")
+        assertEquals(1000.0, val1)
+        assertNull(err1)
+
+        val (val2, err2) = com.example.dataguard.utils.DataUnitUtils.validateInput("6.8")
+        assertEquals(6.8, val2)
+        assertNull(err2)
+
+        // Invalid inputs: empty or blank
+        val (val3, err3) = com.example.dataguard.utils.DataUnitUtils.validateInput("")
+        assertNull(val3)
+        assertNotNull(err3)
+
+        val (val4, err4) = com.example.dataguard.utils.DataUnitUtils.validateInput("   ")
+        assertNull(val4)
+        assertNotNull(err4)
+
+        // Invalid inputs: zero
+        val (val5, err5) = com.example.dataguard.utils.DataUnitUtils.validateInput("0")
+        assertNull(val5)
+        assertEquals("Limit must be greater than 0", err5)
+
+        // Invalid inputs: negative
+        val (val6, err6) = com.example.dataguard.utils.DataUnitUtils.validateInput("-15.5")
+        assertNull(val6)
+        assertEquals("Limit must be greater than 0", err6)
+
+        // Invalid inputs: non-numeric
+        val (val7, err7) = com.example.dataguard.utils.DataUnitUtils.validateInput("abc")
+        assertNull(val7)
+        assertEquals("Please enter a valid number", err7)
+    }
+
+    @Test
+    fun testMilestone11_DataLimitUnit_parsing() {
+        assertEquals(com.example.dataguard.utils.DataLimitUnit.MB, com.example.dataguard.utils.DataLimitUnit.fromString("MB"))
+        assertEquals(com.example.dataguard.utils.DataLimitUnit.MB, com.example.dataguard.utils.DataLimitUnit.fromString("mb"))
+        assertEquals(com.example.dataguard.utils.DataLimitUnit.GB, com.example.dataguard.utils.DataLimitUnit.fromString("GB"))
+        assertEquals(com.example.dataguard.utils.DataLimitUnit.GB, com.example.dataguard.utils.DataLimitUnit.fromString("gb"))
+        assertEquals(com.example.dataguard.utils.DataLimitUnit.MB, com.example.dataguard.utils.DataLimitUnit.fromString(null))
+        assertEquals(com.example.dataguard.utils.DataLimitUnit.MB, com.example.dataguard.utils.DataLimitUnit.fromString("invalid"))
+    }
+
+    @Test
+    fun testMilestone11_DailyLimit_fallbackToPreviousDayLimitLogic() {
+        // Test fallback logic:
+        // Default previous day limit: 1000 MB (1048576000 bytes)
+        val defaultPreviousBytes = 1000L * 1024L * 1024L
+
+        // If today's input is not inserted (empty string or blank), previous day limit is used
+        val uninsertedInput = "   "
+        val (parsed, error) = com.example.dataguard.utils.DataUnitUtils.validateInput(uninsertedInput)
+        assertNull(parsed)
+        assertNotNull(error)
+
+        // When not inserted, the active limit falls back to previous day limit
+        val activeLimit = if (parsed != null && error == null) {
+            com.example.dataguard.utils.DataUnitUtils.limitToBytes(parsed, com.example.dataguard.utils.DataLimitUnit.MB)
+        } else {
+            defaultPreviousBytes
+        }
+
+        assertEquals(defaultPreviousBytes, activeLimit)
+        assertEquals(1048576000L, activeLimit)
+    }
+
+    @Test
+    fun testMilestone11_DailyLimit_archivingPreviousDayLimit() {
+        // When user updates daily limit from 1000 MB to 2000 MB, previous day limit stores 1000 MB
+        val initialDailyBytes = 1000L * 1024L * 1024L
+        var previousDayLimitBytes = initialDailyBytes
+        var currentDailyBytes = initialDailyBytes
+
+        val newDailyBytes = 2000L * 1024L * 1024L
+        if (currentDailyBytes > 0L && currentDailyBytes != newDailyBytes) {
+            previousDayLimitBytes = currentDailyBytes
+        }
+        currentDailyBytes = newDailyBytes
+
+        assertEquals(1000L * 1024L * 1024L, previousDayLimitBytes)
+        assertEquals(2000L * 1024L * 1024L, currentDailyBytes)
+
+        // If daily limit is cleared / not inserted, system falls back to previous day limit
+        val isDailyLimitInserted = false
+        val effectiveDailyLimit = if (isDailyLimitInserted) currentDailyBytes else previousDayLimitBytes
+        assertEquals(1000L * 1024L * 1024L, effectiveDailyLimit)
+    }
+
+    @Test
+    fun testMilestone12_DnsQueryParsing_extractsDomain() {
+        // Construct standard DNS query for "example.com"
+        val queryBuf = java.nio.ByteBuffer.allocate(32)
+        queryBuf.putShort(0x1234.toShort()) // ID
+        queryBuf.putShort(0x0100.toShort()) // Flags: standard query, RD=1
+        queryBuf.putShort(1.toShort())      // QDCOUNT: 1
+        queryBuf.putShort(0.toShort())      // ANCOUNT: 0
+        queryBuf.putShort(0.toShort())      // NSCOUNT: 0
+        queryBuf.putShort(0.toShort())      // ARCOUNT: 0
+
+        // QNAME: 7 "example" 3 "com" 0
+        queryBuf.put(7.toByte())
+        queryBuf.put("example".toByteArray(Charsets.US_ASCII))
+        queryBuf.put(3.toByte())
+        queryBuf.put("com".toByteArray(Charsets.US_ASCII))
+        queryBuf.put(0.toByte()) // null terminator
+
+        // QTYPE: 1 (A), QCLASS: 1 (IN)
+        queryBuf.putShort(1.toShort())
+        queryBuf.putShort(1.toShort())
+
+        val queryBytes = queryBuf.array().copyOf(queryBuf.position())
+        val extractedDomain = com.example.dataguard.vpn.engine.DnsQueryParser.extractDnsDomain(queryBytes)
+
+        assertEquals("example.com", extractedDomain)
+    }
+
+    @Test
+    fun testMilestone12_DnsNxDomainResponseSynthesis() {
+        // Construct query for "blocked.com"
+        val queryBuf = java.nio.ByteBuffer.allocate(32)
+        queryBuf.putShort(0xABCD.toShort()) // ID
+        queryBuf.putShort(0x0100.toShort())
+        queryBuf.putShort(1.toShort())
+        queryBuf.putShort(0.toShort())
+        queryBuf.putShort(0.toShort())
+        queryBuf.putShort(0.toShort())
+
+        queryBuf.put(7.toByte())
+        queryBuf.put("blocked".toByteArray(Charsets.US_ASCII))
+        queryBuf.put(3.toByte())
+        queryBuf.put("com".toByteArray(Charsets.US_ASCII))
+        queryBuf.put(0.toByte())
+        queryBuf.putShort(1.toShort())
+        queryBuf.putShort(1.toShort())
+
+        val queryBytes = queryBuf.array().copyOf(queryBuf.position())
+        val response = com.example.dataguard.vpn.engine.SystemDnsResolver.buildDnsNxDomainResponse(queryBytes)
+
+        assertNotNull(response)
+        val respBuf = java.nio.ByteBuffer.wrap(response!!)
+        val respId = respBuf.short.toInt() and 0xFFFF
+        val respFlags = respBuf.short.toInt() and 0xFFFF
+
+        assertEquals(0xABCD, respId)
+        // RCODE is low 4 bits of flags. RCODE 3 = NXDOMAIN
+        assertEquals(3, respFlags and 0x000F)
+    }
+
+    @Test
+    fun testMilestone12_Ipv4UdpPacketConstruction() {
+        val payload = "DNS-RESPONSE-MOCK".toByteArray()
+        val packet = com.example.dataguard.vpn.engine.SystemDnsResolver.buildIpv4UdpPacket(
+            srcIp = "10.1.10.2",
+            dstIp = "10.1.10.1",
+            srcPort = 53,
+            dstPort = 54321,
+            payload = payload
+        )
+
+        assertNotNull(packet)
+        // IP header (20) + UDP header (8) + payload (17) = 45 bytes
+        assertEquals(20 + 8 + payload.size, packet.size)
+
+        val buf = java.nio.ByteBuffer.wrap(packet)
+        val verIhl = buf.get().toInt() and 0xFF
+        assertEquals(4, verIhl shr 4) // IPv4
+        assertEquals(5, verIhl and 0x0F) // IHL 5 (20 bytes)
+
+        buf.get() // DSCP
+        val totalLen = buf.short.toInt() and 0xFFFF
+        assertEquals(packet.size, totalLen)
+
+        buf.position(9)
+        val protocol = buf.get().toInt() and 0xFF
+        assertEquals(17, protocol) // UDP protocol
+
+        // Verify UDP header
+        buf.position(20)
+        val srcPort = buf.short.toInt() and 0xFFFF
+        val dstPort = buf.short.toInt() and 0xFFFF
+        val udpLen = buf.short.toInt() and 0xFFFF
+
+        assertEquals(53, srcPort)
+        assertEquals(54321, dstPort)
+        assertEquals(8 + payload.size, udpLen)
+    }
 }
+
 

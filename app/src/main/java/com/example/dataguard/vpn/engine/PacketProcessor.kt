@@ -1,5 +1,6 @@
 package com.example.dataguard.vpn.engine
 
+import android.content.Context
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.example.dataguard.data.entity.AttributionConfidence
@@ -9,7 +10,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.nio.ByteBuffer
 
@@ -27,8 +30,8 @@ data class PacketMetadata(
 
 /**
  * Processes packets from the TUN virtual interface.
- * Implements non-blocking, safe packet processing with robust error handling
- * and graceful cancellation to prevent resource leaks.
+ * Implements non-blocking, safe packet processing with robust error handling,
+ * real-time DNS capture, and protected upstream forwarding to system default DNS.
  *
  * Inspects TECHNICAL METADATA ONLY:
  * - DNS query names (UDP 53)
@@ -46,6 +49,13 @@ class PacketProcessor(
     @Volatile
     private var isRunning = false
 
+    var socketProtector: ((DatagramSocket) -> Boolean)? = null
+    var context: Context? = null
+    var customUpstreamDns: List<InetAddress>? = null
+
+    private val writeLock = Any()
+    private var outputStream: FileOutputStream? = null
+
     fun start(pfd: ParcelFileDescriptor, scope: CoroutineScope) {
         if (isRunning) {
             Log.w(TAG, "PacketProcessor already running")
@@ -56,9 +66,10 @@ class PacketProcessor(
         workerJob = scope.launch(Dispatchers.IO) {
             val buffer = ByteBuffer.allocate(32767)
             val inputStream = FileInputStream(pfd.fileDescriptor)
+            outputStream = FileOutputStream(pfd.fileDescriptor)
 
             try {
-                Log.i(TAG, "Packet processing loop started with domain & SNI inspection")
+                Log.i(TAG, "Packet processing loop started with real-time DNS capture and upstream forwarding")
                 while (isActive && isRunning) {
                     buffer.clear()
                     val bytesRead = try {
@@ -80,8 +91,13 @@ class PacketProcessor(
                     if (metadata != null) {
                         accountingEngine.recordPacketIn(bytesRead.toLong())
 
-                        // Extract technical domain / SNI / DNS metadata safely without decrypting
-                        inspectTransportPayload(buffer, metadata, bytesRead.toLong())
+                        // Check if this is a DNS UDP query
+                        if (metadata.protocol == 17) {
+                            handleUdpPacket(buffer, metadata, bytesRead, scope)
+                        } else {
+                            // Extract other transport metadata (e.g. TCP SNI) safely
+                            inspectTransportPayload(buffer, metadata, bytesRead.toLong())
+                        }
                     }
                 }
             } catch (t: Throwable) {
@@ -90,6 +106,12 @@ class PacketProcessor(
                 }
             } finally {
                 isRunning = false
+                synchronized(writeLock) {
+                    try {
+                        outputStream?.close()
+                    } catch (_: Exception) {}
+                    outputStream = null
+                }
                 Log.i(TAG, "Packet processing loop terminated cleanly")
             }
         }
@@ -99,6 +121,167 @@ class PacketProcessor(
         isRunning = false
         workerJob?.cancel()
         workerJob = null
+        synchronized(writeLock) {
+            try {
+                outputStream?.close()
+            } catch (_: Exception) {}
+            outputStream = null
+        }
+    }
+
+    /**
+     * Handles incoming UDP packets on the TUN interface.
+     * Intercepts DNS queries on port 53, evaluates firewall rules, and either
+     * returns an immediate NXDOMAIN/Sinkhole or forwards upstream to System Default DNS.
+     */
+    private fun handleUdpPacket(
+        buffer: ByteBuffer,
+        ipMeta: PacketMetadata,
+        totalBytes: Int,
+        scope: CoroutineScope
+    ) {
+        val ipHeaderLen = ipMeta.headerLength
+        if (buffer.limit() < ipHeaderLen + 8) return
+
+        buffer.position(ipHeaderLen)
+        val srcPort = buffer.short.toInt() and 0xFFFF
+        val dstPort = buffer.short.toInt() and 0xFFFF
+        val udpLen = buffer.short.toInt() and 0xFFFF
+        val udpChecksum = buffer.short
+
+        // Check if this is a DNS query (destined to port 53 or to virtual DNS IP)
+        if (dstPort == SystemDnsResolver.DNS_PORT && buffer.hasRemaining()) {
+            val payloadLen = buffer.remaining()
+            val queryBytes = ByteArray(payloadLen)
+            buffer.get(queryBytes)
+
+            val dnsDomain = DnsQueryParser.extractDnsDomain(queryBytes)
+            if (dnsDomain != null) {
+                val eval = firewallEngine.evaluateConnection(
+                    domain = dnsDomain,
+                    packageName = null,
+                    networkType = NetworkInterfaceType.ANY
+                )
+
+                if (eval.decision == FirewallDecision.BLOCK) {
+                    // Synthesize immediate NXDOMAIN response for blocked domain
+                    val nxDomainResponse = SystemDnsResolver.buildDnsNxDomainResponse(queryBytes)
+                        ?: SystemDnsResolver.buildDnsSinkholeResponse(queryBytes)
+                    if (nxDomainResponse != null) {
+                        val packet = SystemDnsResolver.buildIpv4UdpPacket(
+                            srcIp = ipMeta.destinationAddress,
+                            dstIp = ipMeta.sourceAddress,
+                            srcPort = dstPort,
+                            dstPort = srcPort,
+                            payload = nxDomainResponse
+                        )
+                        writePacketToTun(packet)
+                        accountingEngine.recordPacketOut(packet.size.toLong())
+
+                        flowTracker?.recordDnsQuery(
+                            queriedDomain = dnsDomain,
+                            clientIp = ipMeta.sourceAddress,
+                            uploadBytes = queryBytes.size.toLong(),
+                            downloadBytes = nxDomainResponse.size.toLong()
+                        )
+                    }
+                    return
+                }
+
+                // If allowed: forward upstream to System Network Default DNS
+                scope.launch(Dispatchers.IO) {
+                    forwardAndRespondDns(
+                        dnsDomain = dnsDomain,
+                        queryBytes = queryBytes,
+                        clientIp = ipMeta.sourceAddress,
+                        clientPort = srcPort,
+                        dnsServerIp = ipMeta.destinationAddress,
+                        dnsPort = dstPort
+                    )
+                }
+                return
+            }
+        }
+
+        // Other generic UDP traffic
+        flowTracker?.recordObservation(
+            RawFlowObservation(
+                domain = null,
+                destinationIp = ipMeta.destinationAddress,
+                protocol = "UDP",
+                uploadBytes = totalBytes.toLong(),
+                downloadBytes = 0L,
+                networkType = "ANY"
+            ),
+            forcedConfidence = AttributionConfidence.LOW
+        )
+    }
+
+    /**
+     * Forwards DNS query to System Default DNS over protected socket and writes response to TUN.
+     */
+    private fun forwardAndRespondDns(
+        dnsDomain: String,
+        queryBytes: ByteArray,
+        clientIp: String,
+        clientPort: Int,
+        dnsServerIp: String,
+        dnsPort: Int
+    ) {
+        val upstreamServers = customUpstreamDns ?: (
+            context?.let { SystemDnsResolver.getSystemDnsServers(it) } ?: listOf(
+                InetAddress.getByName("8.8.8.8"),
+                InetAddress.getByName("1.1.1.1")
+            )
+        )
+
+        val response = SystemDnsResolver.forwardDnsQuery(
+            queryData = queryBytes,
+            upstreamServers = upstreamServers,
+            socketProtector = socketProtector
+        )
+
+        if (response != null) {
+            val responsePacket = SystemDnsResolver.buildIpv4UdpPacket(
+                srcIp = dnsServerIp,
+                dstIp = clientIp,
+                srcPort = dnsPort,
+                dstPort = clientPort,
+                payload = response
+            )
+            writePacketToTun(responsePacket)
+            accountingEngine.recordPacketOut(responsePacket.size.toLong())
+
+            // Map resolved IPs to domain
+            val resolvedIps = DnsQueryParser.extractResolvedIpv4Addresses(response)
+            for (ip in resolvedIps) {
+                flowTracker?.registerIpDomainMapping(ip, dnsDomain)
+            }
+
+            // Record live observation in tracker
+            flowTracker?.recordDnsQuery(
+                queriedDomain = dnsDomain,
+                clientIp = clientIp,
+                uploadBytes = queryBytes.size.toLong(),
+                downloadBytes = response.size.toLong()
+            )
+        }
+    }
+
+    /**
+     * Thread-safely writes raw IPv4 packet back to the TUN virtual interface.
+     */
+    fun writePacketToTun(packet: ByteArray) {
+        synchronized(writeLock) {
+            try {
+                outputStream?.write(packet)
+                outputStream?.flush()
+            } catch (e: Exception) {
+                if (isRunning) {
+                    Log.d(TAG, "Error writing packet to TUN: ${e.message}")
+                }
+            }
+        }
     }
 
     /**
@@ -108,50 +291,12 @@ class PacketProcessor(
         val tracker = flowTracker ?: return
 
         try {
-            // Position buffer after IPv4 header
             val ipHeaderLen = ipMeta.headerLength
             if (buffer.limit() <= ipHeaderLen) return
 
             buffer.position(ipHeaderLen)
 
             when (ipMeta.protocol) {
-                // UDP (17) -> Check DNS query on port 53
-                17 -> {
-                    if (buffer.remaining() >= 8) {
-                        val srcPort = buffer.short.toInt() and 0xFFFF
-                        val dstPort = buffer.short.toInt() and 0xFFFF
-                        val udpLen = buffer.short.toInt() and 0xFFFF
-                        val udpChecksum = buffer.short
-
-                        if (dstPort == 53 && buffer.hasRemaining()) {
-                            // Inspect DNS question without decrypting or logging user data
-                            val dnsDomain = DnsQueryParser.extractDnsDomain(buffer)
-                            if (dnsDomain != null) {
-                                val eval = firewallEngine.evaluateConnection(
-                                    domain = dnsDomain,
-                                    packageName = null,
-                                    networkType = NetworkInterfaceType.ANY
-                                )
-                                tracker.recordDnsQuery(dnsDomain, ipMeta.sourceAddress)
-                                return
-                            }
-                        }
-
-                        // Record UDP flow
-                        tracker.recordObservation(
-                            RawFlowObservation(
-                                domain = null,
-                                destinationIp = ipMeta.destinationAddress,
-                                protocol = "UDP",
-                                uploadBytes = totalBytes,
-                                downloadBytes = 0L,
-                                networkType = "ANY"
-                            ),
-                            forcedConfidence = AttributionConfidence.LOW
-                        )
-                    }
-                }
-
                 // TCP (6) -> Check TLS SNI on port 443
                 6 -> {
                     if (buffer.remaining() >= 20) {
@@ -160,38 +305,34 @@ class PacketProcessor(
                         val seqNum = buffer.int
                         val ackNum = buffer.int
                         val dataOffsetAndFlags = buffer.short.toInt() and 0xFFFF
-                        val dataOffset = ((dataOffsetAndFlags shr 12) and 0x0F) * 4
+                        val tcpHeaderLen = ((dataOffsetAndFlags shr 12) and 0x0F) * 4
 
-                        // Advance past TCP header into TLS ClientHello payload if present
-                        val tcpPayloadStart = ipHeaderLen + dataOffset
-                        if (tcpPayloadStart < buffer.limit()) {
-                            buffer.position(tcpPayloadStart)
-
-                            var observedDomain: String? = null
-                            if (dstPort == 443 || srcPort == 443) {
-                                observedDomain = SniParser.extractSni(buffer)
+                        if (tcpHeaderLen in 20..buffer.remaining()) {
+                            buffer.position(ipHeaderLen + tcpHeaderLen)
+                            if (dstPort == 443 && buffer.hasRemaining()) {
+                                val sni = TlsSniParser.extractSniHostname(buffer)
+                                if (sni != null) {
+                                    firewallEngine.evaluateConnection(
+                                        domain = sni,
+                                        packageName = null,
+                                        networkType = NetworkInterfaceType.ANY
+                                    )
+                                    tracker.registerIpDomainMapping(ipMeta.destinationAddress, sni)
+                                    tracker.recordObservation(
+                                        RawFlowObservation(
+                                            domain = sni,
+                                            destinationIp = ipMeta.destinationAddress,
+                                            protocol = "TLS/HTTPS",
+                                            uploadBytes = totalBytes,
+                                            downloadBytes = 0L,
+                                            networkType = "ANY"
+                                        ),
+                                        forcedConfidence = AttributionConfidence.HIGH
+                                    )
+                                    return
+                                }
                             }
 
-                            if (observedDomain != null) {
-                                val eval = firewallEngine.evaluateConnection(
-                                    domain = observedDomain,
-                                    packageName = null,
-                                    networkType = NetworkInterfaceType.ANY
-                                )
-                            }
-
-                            tracker.recordObservation(
-                                RawFlowObservation(
-                                    domain = observedDomain,
-                                    destinationIp = ipMeta.destinationAddress,
-                                    protocol = if (observedDomain != null) "TLS" else "TCP",
-                                    uploadBytes = totalBytes,
-                                    downloadBytes = 0L,
-                                    networkType = "ANY"
-                                ),
-                                forcedConfidence = if (observedDomain != null) AttributionConfidence.HIGH else AttributionConfidence.LOW
-                            )
-                        } else {
                             tracker.recordObservation(
                                 RawFlowObservation(
                                     domain = null,
