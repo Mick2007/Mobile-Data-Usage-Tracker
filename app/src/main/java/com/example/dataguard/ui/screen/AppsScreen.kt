@@ -124,6 +124,7 @@ fun AppsScreen(
     val hasUsageStats by viewModel.hasUsageStatsPermission.collectAsState()
     val isNetworkStatsActive by viewModel.isFromNetworkStats.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val showSystemApps by viewModel.showSystemApps.collectAsState()
 
     var showCustomDateDialog by remember { mutableStateOf(false) }
 
@@ -132,7 +133,9 @@ fun AppsScreen(
 
     val filteredApps = allApps
         .filter {
-            it.totalBytes > 0L && (
+            it.totalBytes > 0L &&
+            (showSystemApps || !it.isSystem) &&
+            (
                 searchQuery.isBlank() ||
                 it.appName.contains(searchQuery, ignoreCase = true) ||
                 it.packageName.contains(searchQuery, ignoreCase = true)
@@ -305,11 +308,31 @@ fun AppsScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Sort Options Row
+        // Sort and Filter Controls Row
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
+            item {
+                FilterChip(
+                    selected = showSystemApps,
+                    onClick = { viewModel.toggleShowSystemApps() },
+                    label = {
+                        Text(
+                            text = if (showSystemApps) "System Apps" else "System Apps Hidden",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp)
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (showSystemApps) Icons.Default.CheckCircle else Icons.Default.Close,
+                            contentDescription = if (showSystemApps) "System apps shown" else "System apps hidden",
+                            modifier = Modifier.size(12.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("toggle_system_apps")
+                )
+            }
             items(AppSortOption.values()) { option ->
                 val isSelected = sortOption == option
                 FilterChip(
@@ -362,7 +385,7 @@ fun AppsScreen(
                     .testTag("apps_list"),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(filteredApps, key = { it.packageName }) { app ->
+                items(filteredApps, key = { "${it.packageName}_${it.uid}" }) { app ->
                     val isBlocked = viewModel.isAppBlocked(app.uid)
                     val quotaCalc = quotaCalculations[app.uid]
                     AppItemCard(
@@ -492,6 +515,12 @@ private fun AppItemCard(
                 .fillMaxWidth()
                 .padding(14.dp)
         ) {
+            val displayTitle = if (app.appName.startsWith("System UID", ignoreCase = true) || app.appName.isBlank()) {
+                app.packageName
+            } else {
+                app.appName
+            }
+
             // Header: Icon, Name, Package, Percentage badge & Block switch
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -504,7 +533,7 @@ private fun AppItemCard(
                 ) {
                     AppIconView(
                         packageName = app.packageName,
-                        appName = app.appName,
+                        appName = displayTitle,
                         isBlocked = isBlocked
                     )
 
@@ -513,7 +542,7 @@ private fun AppItemCard(
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = app.appName,
+                                text = displayTitle,
                                 style = MaterialTheme.typography.titleSmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurface

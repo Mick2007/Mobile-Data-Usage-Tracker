@@ -261,6 +261,7 @@ class NetworkStatsHelper(
         // Combine all active UIDs
         val allUids = (uidMobileMap.keys + uidWifiMap.keys).toSet()
         val apps = mutableListOf<AppDataUsage>()
+        val packageMap = getInstalledPackagesMap()
 
         for (uid in allUids) {
             val mData = uidMobileMap[uid] ?: Pair(0L, 0L)
@@ -273,19 +274,20 @@ class NetworkStatsHelper(
             val total = mTx + mRx + wTx + wRx
 
             if (total > 0) {
-                val appInfo = getAppInfoForUid(uid)
+                val appInfo = getAppInfoForUid(uid, packageMap)
                 apps.add(
                     AppDataUsage(
                         uid = uid,
-                        packageName = appInfo.first,
-                        appName = appInfo.second,
+                        packageName = appInfo.packageName,
+                        appName = appInfo.appName,
                         mobileTxBytes = mTx,
                         mobileRxBytes = mRx,
                         wifiTxBytes = wTx,
                         wifiRxBytes = wRx,
                         totalBytes = total,
                         txBytes = mTx + wTx,
-                        rxBytes = mRx + wRx
+                        rxBytes = mRx + wRx,
+                        isSystemApp = appInfo.isSystemApp
                     )
                 )
             }
@@ -348,10 +350,14 @@ class NetworkStatsHelper(
 
         try {
             val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                packageManager.getInstalledPackages(PackageManager.PackageInfoFlags.of(0L))
+                packageManager.getInstalledPackages(
+                    PackageManager.PackageInfoFlags.of(
+                        (PackageManager.MATCH_UNINSTALLED_PACKAGES or PackageManager.MATCH_DISABLED_COMPONENTS).toLong()
+                    )
+                )
             } else {
                 @Suppress("DEPRECATION")
-                packageManager.getInstalledPackages(0)
+                packageManager.getInstalledPackages(PackageManager.MATCH_UNINSTALLED_PACKAGES or PackageManager.MATCH_DISABLED_COMPONENTS)
             }
 
             for (pkg in packages) {
@@ -378,18 +384,22 @@ class NetworkStatsHelper(
                     val wTx = (tx * wifiRatio).toLong()
                     val wRx = (rx * wifiRatio).toLong()
 
+                    val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0) || uid < 10000
+                    val displayName = if (isSystem || appName.isBlank()) pkg.packageName else appName
+
                     apps.add(
                         AppDataUsage(
                             uid = uid,
                             packageName = pkg.packageName,
-                            appName = appName,
+                            appName = displayName,
                             mobileTxBytes = mTx,
                             mobileRxBytes = mRx,
                             wifiTxBytes = wTx,
                             wifiRxBytes = wRx,
                             totalBytes = tx + rx,
                             txBytes = tx,
-                            rxBytes = rx
+                            rxBytes = rx,
+                            isSystemApp = isSystem
                         )
                     )
                 }
@@ -418,25 +428,142 @@ class NetworkStatsHelper(
         )
     }
 
-    private fun getAppInfoForUid(uid: Int): Pair<String, String> {
-        val packages = packageManager.getPackagesForUid(uid)
-        if (!packages.isNullOrEmpty()) {
-            val packageName = packages[0]
-            val appName = try {
-                val info = packageManager.getApplicationInfo(packageName, 0)
-                packageManager.getApplicationLabel(info).toString()
-            } catch (e: Exception) {
-                packageName
+    private fun getInstalledPackagesMap(): Map<Int, List<android.content.pm.PackageInfo>> {
+        return try {
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                PackageManager.PackageInfoFlags.of(
+                    (PackageManager.MATCH_UNINSTALLED_PACKAGES or PackageManager.MATCH_DISABLED_COMPONENTS).toLong()
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                (PackageManager.MATCH_UNINSTALLED_PACKAGES or PackageManager.MATCH_DISABLED_COMPONENTS)
             }
-            return Pair(packageName, appName)
+            val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getInstalledPackages(flags as PackageManager.PackageInfoFlags)
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getInstalledPackages(flags as Int)
+            }
+            packages.groupBy { it.applicationInfo?.uid ?: -1 }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    data class ResolvedAppInfo(
+        val packageName: String,
+        val appName: String,
+        val isSystemApp: Boolean
+    )
+
+    private fun getAppInfoForUid(
+        uid: Int,
+        packageMap: Map<Int, List<android.content.pm.PackageInfo>> = emptyMap()
+    ): ResolvedAppInfo {
+        // 1. Check pre-cached installed packages map
+        val cachedPackages = packageMap[uid]
+        if (!cachedPackages.isNullOrEmpty()) {
+            val pkg = cachedPackages.firstOrNull { it.packageName != "android" } ?: cachedPackages[0]
+            val pkgName = pkg.packageName
+            val appInfo = pkg.applicationInfo
+            val isSystem = (appInfo != null && (appInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0)) || uid < 10000
+            val label = try {
+                if (appInfo != null) packageManager.getApplicationLabel(appInfo).toString() else pkgName
+            } catch (e: Exception) {
+                pkgName
+            }
+            // For system apps, use the exact package identifier (e.g., com.android.phone)
+            val displayName = if (isSystem || label.isBlank()) pkgName else label
+            return ResolvedAppInfo(
+                packageName = pkgName,
+                appName = displayName,
+                isSystemApp = isSystem
+            )
         }
 
-        // Special system UIDs
-        return when (uid) {
-            android.os.Process.SYSTEM_UID -> Pair("android.system", "Android OS")
-            1000 -> Pair("android.system", "System Server")
-            else -> Pair("uid.$uid", "System UID ($uid)")
+        // 2. Direct package lookup
+        val directPackages = try {
+            packageManager.getPackagesForUid(uid)
+        } catch (e: Exception) {
+            null
         }
+        if (!directPackages.isNullOrEmpty()) {
+            val pkgName = directPackages.firstOrNull { it != "android" } ?: directPackages[0]
+            val isSystem = uid < 10000 || pkgName.startsWith("com.android.") || pkgName.startsWith("android")
+            val appInfo = try {
+                packageManager.getApplicationInfo(pkgName, 0)
+            } catch (e: Exception) {
+                null
+            }
+            val label = try {
+                if (appInfo != null) packageManager.getApplicationLabel(appInfo).toString() else pkgName
+            } catch (e: Exception) {
+                pkgName
+            }
+            val displayName = if (isSystem || label.isBlank()) pkgName else label
+            return ResolvedAppInfo(
+                packageName = pkgName,
+                appName = displayName,
+                isSystemApp = isSystem
+            )
+        }
+
+        // 3. System process name lookup via PackageManager
+        val nameForUid = try {
+            packageManager.getNameForUid(uid)
+        } catch (e: Exception) {
+            null
+        }
+        if (!nameForUid.isNullOrBlank()) {
+            val cleanName = when {
+                nameForUid.startsWith("android.uid.phone") -> "com.android.phone"
+                nameForUid.startsWith("android.uid.system") -> "android.uid.system"
+                nameForUid.startsWith("android.uid.bluetooth") -> "com.android.bluetooth"
+                nameForUid.startsWith("android.uid.nfc") -> "com.android.nfc"
+                nameForUid.startsWith("android.uid.networkstack") -> "com.android.networkstack"
+                nameForUid.contains(":") -> nameForUid.substringBefore(":")
+                else -> nameForUid
+            }
+            return ResolvedAppInfo(
+                packageName = cleanName,
+                appName = cleanName,
+                isSystemApp = true
+            )
+        }
+
+        // 4. Deterministic AOSP System UIDs
+        val systemPackage = when (uid) {
+            0 -> "android.kernel"
+            1000 -> "android.uid.system"
+            1001 -> "com.android.phone"
+            1002 -> "com.android.bluetooth"
+            1013 -> "android.media"
+            1014 -> "android.drm"
+            1020 -> "android.net.mdns"
+            1021 -> "android.location"
+            1027 -> "com.android.nfc"
+            1068 -> "android.net.dns"
+            1073 -> "com.android.networkstack"
+            1074 -> "com.android.captiveportallogin"
+            -4 -> "android.uid.removed"
+            -5 -> "android.uid.tethering"
+            else -> null
+        }
+        if (systemPackage != null) {
+            return ResolvedAppInfo(
+                packageName = systemPackage,
+                appName = systemPackage,
+                isSystemApp = true
+            )
+        }
+
+        // 5. Fallback without ambiguous 'System UID' string
+        val fallback = if (uid < 10000) "android.process.$uid" else "app.uid.$uid"
+        return ResolvedAppInfo(
+            packageName = fallback,
+            appName = fallback,
+            isSystemApp = uid < 10000
+        )
     }
 
     /**

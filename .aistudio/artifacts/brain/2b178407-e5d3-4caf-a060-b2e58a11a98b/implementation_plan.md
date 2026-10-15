@@ -1,55 +1,80 @@
-# Diagnostics Plan: Understanding & Managing System Logcat Warnings
+# Implementation Plan: Comprehensive System App Recognition & Filter Toggle
 
-This plan documents the root causes of the logcat warnings reported, explains why they occur, and details how the app manages them while keeping Firebase libraries ready for future cloud features.
-
----
-
-## 1. Analysis of the Warnings
-
-### A. FirebaseApp Initialization Warning
-- **Log**: `W/FirebaseApp: Default FirebaseApp failed to initialize because no default options were found. This usually means that com.google.gms:google-services was not applied to your gradle project.`
-- **Cause**: Firebase dependencies are present in `app/build.gradle.kts`. When the app boots, Firebase's automatic initialization provider (`FirebaseInitProvider`) looks for a linked cloud project (`google-services.json`).
-- **Impact**: Non-fatal warning. The app continues running normally using local SQLite/Room storage.
-- **Action**: Per user decision, keep Firebase dependencies intact in Gradle so they are immediately available when cloud sync or authentication is provisioned in the future.
-
-### B. HWUI Graphics Engine Warnings
-- **Logs**:
-  - `W/HWUI: Failed to choose config with EGL_SWAP_BEHAVIOR_PRESERVED, retrying without...`
-  - `W/HWUI: Failed to initialize 101010-2 format, error = EGL_SUCCESS`
-  - `W/HWUI: Unknown dataspace 0`
-- **Cause**: HWUI (Hardware UI) is Android's GPU rendering engine. When running inside cloud-streamed Android emulators, the virtual GPU negotiates display buffers with the host graphics server. It checks if 10-bit HDR color (`101010-2`) or swap-preservation are supported; when falling back to standard 8-bit RGBA buffers, it outputs informational warnings to Logcat.
-- **Impact**: Completely harmless. These are OS-level GPU driver handshake logs present on almost all Android emulators.
-- **Action**: No code changes needed; these represent healthy graphics pipeline negotiation.
-
-### C. WindowOnBackDispatcher Warning
-- **Logs**: `W/WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=false callback=androidx.activity.OnBackPressedDispatcher$Api34Impl$createOnBackAnimationCallback$1@8d4c273`
-- **Cause**: Android 14+ Predictive Back Gesture framework. When the back button or back action executes without a swipe-to-peek gesture currently in motion, Android's internal dispatcher notes `isInProgress=false`.
-- **Impact**: Completely harmless system log.
-- **Action**: No code changes needed; standard Jetpack Compose back handling behavior.
+This plan addresses the issue where system apps were shown as vague `System UID ($uid)` placeholders rather than their true package names. It implements multi-tier resolution using `PackageManager.getInstalledPackages`, `getNameForUid`, and deterministic AOSP system service mappings to display exact package identifiers (e.g. `com.android.phone`, `android.uid.system`), while adding a dedicated filter toggle to show or hide system apps.
 
 ---
 
-## 2. Proposed Roadmap
+## 1. Problem Analysis & Root Cause
 
-1. **Retain Cloud Readiness**:
-   - Keep Firebase BOM and core libraries configured in `build.gradle.kts` without alterations so future cloud synchronization, backups, and remote quotas can be added seamlessly.
-2. **Diagnostics Clarity**:
-   - Confirm all core app functions (traffic capture, room database caching, quota tracking, firewall simulation, and classic app card displays) remain fully operational without runtime regressions.
+1. **Vague Fallback in `NetworkStatsHelper.kt`**:
+   - `getAppInfoForUid(uid)` currently falls back to `Pair("uid.$uid", "System UID ($uid)")` whenever `packageManager.getPackagesForUid(uid)` returns null or empty.
+   - On Android 11+ (API 30+), many shared system UIDs (e.g. UID 1001 for Phone, UID 1013 for Media, UID 1073 for NetworkStack, UID 0 for Kernel, UID -5 for Tethering) do not return a single simple package through `getPackagesForUid(uid)`.
+   - As a result, critical system applications and services appear in the list with the confusing title `System UID (1001)` or `System UID (1073)`.
+
+2. **User Preferences**:
+   - **Naming**: Use exact package identifiers (e.g. `com.android.phone`, `android.uid.system`, `com.android.networkstack`).
+   - **Styling**: Standard card display without separate visual badges or differences from user apps.
+   - **Filtering**: Add a filter toggle in the Apps view to easily show or hide system apps.
+
+---
+
+## 2. Proposed Changes
+
+### A. Data Layer (`AppDataUsage.kt` / `UsageEntity.kt`)
+- Add `val isSystemApp: Boolean = false` to `AppDataUsage`.
+- Mark an app as a system app if:
+  - `uid < android.os.Process.FIRST_APPLICATION_UID` (UID < 10000), OR
+  - Its package name starts with `android.`, `com.android.`, or system flags.
+
+### B. Domain / Telemetry Layer (`NetworkStatsHelper.kt`)
+- Implement multi-tier system app & UID resolution in `getAppInfoForUid(uid)`:
+  1. **Pre-cached Package Lookup**: Inspect all installed packages from `packageManager.getInstalledPackages(MATCH_UNINSTALLED_PACKAGES or MATCH_DISABLED_COMPONENTS)` matching `uid`. If found, select the exact package identifier (e.g. `com.android.phone`, `com.android.providers.telephony`).
+  2. **System Name Lookup**: Query `packageManager.getNameForUid(uid)`. If a named system service is returned (e.g. `android.uid.phone`, `audioserver`, `cameraserver`), resolve to the exact package/service identifier.
+  3. **AOSP Known System UIDs Mapping**:
+     - `0`: `Pair("android.kernel", "android.kernel")` (Kernel & Root Services)
+     - `1000`: `Pair("android.uid.system", "android.uid.system")` (Android System Server)
+     - `1001`: `Pair("com.android.phone", "com.android.phone")` (Telephony & Cellular Services)
+     - `1002`: `Pair("com.android.bluetooth", "com.android.bluetooth")` (Bluetooth Stack)
+     - `1013`: `Pair("android.media", "android.media")` (MediaServer & Audio Services)
+     - `1014`: `Pair("android.drm", "android.drm")` (DRM Services)
+     - `1020`: `Pair("android.net.mdns", "android.net.mdns")` (Multicast DNS)
+     - `1021`: `Pair("android.location", "android.location")` (Location & GPS Provider)
+     - `1068`: `Pair("android.net.dns", "android.net.dns")` (DNS & Netd Resolver)
+     - `1073`: `Pair("com.android.networkstack", "com.android.networkstack")` (Network Stack)
+     - `1074`: `Pair("com.android.captiveportallogin", "com.android.captiveportallogin")` (Captive Portal)
+     - `-4`: `Pair("android.uid.removed", "android.uid.removed")` (Removed/Uninstalled Apps)
+     - `-5`: `Pair("android.uid.tethering", "android.uid.tethering")` (Hotspot & Tethering)
+  4. **Never Fall Back to Generic String**: For any unknown UID, format as `android.process.$uid` or `android.service.$uid` using the exact identifier.
+
+### C. ViewModel Layer (`AppsViewModel.kt`)
+- Add `_showSystemApps = MutableStateFlow(true)` and public `showSystemApps: StateFlow<Boolean>`.
+- Add `fun toggleShowSystemApps()` to toggle between showing and hiding system apps.
+
+### D. UI Layer (`AppsScreen.kt`)
+- Add a FilterChip in the filter controls row:
+  - Toggle between **"System Apps: Shown"** and **"System Apps: Hidden"**.
+  - Accessible testTag: `Modifier.testTag("toggle_system_apps")`.
+- Update `filteredApps`:
+  - When `showSystemApps` is false, exclude all apps where `isSystemApp == true`.
+  - Maintain active data filtering (`totalBytes > 0L`) and search query matching.
+- App cards maintain standard presentation without special badges, showing the exact package identifier.
 
 ---
 
 ## 3. Verification Plan
 
 ### Automated Verification
-- Verify build integrity:
+- Run compilation checks:
   ```bash
   compile_applet
   ```
-- Run unit tests:
+- Run local unit tests:
   ```bash
   gradle :app:testDebugUnitTest
   ```
 
-### Manual Verification
-- Confirm app launches smoothly on the emulator.
-- Verify that screens (Dashboard, Apps, Limits, Firewall) operate without crashes or visual glitches.
+### Manual / Visual Verification
+- Open the Apps tab.
+- Verify that system processes display exact package names like `com.android.phone`, `android.uid.system`, `com.android.networkstack`, and `android.media` rather than `System UID (1001)`.
+- Click the "System Apps" filter toggle to confirm system apps can be hidden or revealed instantly without jumping scroll positions.
+- Verify search by package identifier or name works reliably.

@@ -1,6 +1,6 @@
 {
-  "summary": "Diagnostics analysis and explanation of the Android system logcat warnings (FirebaseApp, HWUI graphics engine, and WindowOnBackDispatcher) with configuration roadmap.",
-  "updatedAt": "2026-10-15T07:46:46.661489130Z",
+  "summary": "Implementation plan for recognizing system apps with exact package identifiers (e.g., com.android.phone, android.uid.system), eliminating generic 'System UID' placeholders, and providing a filter toggle to show or hide system apps.",
+  "updatedAt": "2026-10-15T09:22:46.525134887Z",
   "requestFeedback": true,
   "userFacing": true
 }

@@ -33,10 +33,17 @@ data class AppDataUsage(
     val totalBytes: Long = mobileTxBytes + mobileRxBytes + wifiTxBytes + wifiRxBytes,
     val txBytes: Long = mobileTxBytes + wifiTxBytes,
     val rxBytes: Long = mobileRxBytes + wifiRxBytes,
-    val usagePercentage: Float = 0f
+    val usagePercentage: Float = 0f,
+    val isSystemApp: Boolean = false
 ) {
     val mobileTotalBytes: Long get() = mobileTxBytes + mobileRxBytes
     val wifiTotalBytes: Long get() = wifiTxBytes + wifiRxBytes
+
+    val isSystem: Boolean get() = isSystemApp ||
+        uid < 10000 ||
+        packageName.startsWith("android") ||
+        packageName.startsWith("com.android.") ||
+        packageName.startsWith("uid.")
 
     fun serialize(): String =
         "$uid\t$packageName\t$appName\t$mobileTxBytes\t$mobileRxBytes\t$wifiTxBytes\t$wifiRxBytes\t$totalBytes\t$usagePercentage"

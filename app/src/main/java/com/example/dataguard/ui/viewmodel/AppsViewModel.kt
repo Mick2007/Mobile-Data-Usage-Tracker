@@ -48,6 +48,17 @@ class AppsViewModel(
     private val _sortOption = MutableStateFlow(AppSortOption.TOTAL_USAGE)
     val sortOption: StateFlow<AppSortOption> = _sortOption.asStateFlow()
 
+    private val _showSystemApps = MutableStateFlow(true)
+    val showSystemApps: StateFlow<Boolean> = _showSystemApps.asStateFlow()
+
+    fun toggleShowSystemApps() {
+        _showSystemApps.value = !_showSystemApps.value
+    }
+
+    fun setShowSystemApps(show: Boolean) {
+        _showSystemApps.value = show
+    }
+
     private val _blockedApps = MutableStateFlow<List<BlockedAppEntity>>(emptyList())
     val blockedApps: StateFlow<List<BlockedAppEntity>> = _blockedApps.asStateFlow()
 
