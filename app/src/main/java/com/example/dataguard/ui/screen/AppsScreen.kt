@@ -19,9 +19,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.vector.ImageVector
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -122,11 +127,16 @@ fun AppsScreen(
 
     var showCustomDateDialog by remember { mutableStateOf(false) }
 
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
     val filteredApps = allApps
         .filter {
-            searchQuery.isBlank() ||
-                    it.appName.contains(searchQuery, ignoreCase = true) ||
-                    it.packageName.contains(searchQuery, ignoreCase = true)
+            it.totalBytes > 0L && (
+                searchQuery.isBlank() ||
+                it.appName.contains(searchQuery, ignoreCase = true) ||
+                it.packageName.contains(searchQuery, ignoreCase = true)
+            )
         }
         .let { list ->
             when (sortOption) {
@@ -139,7 +149,9 @@ fun AppsScreen(
             }
         }
 
-    val maxAppBytes = (allApps.maxOfOrNull { it.totalBytes } ?: 1L).coerceAtLeast(1L)
+    val maxTotalBytes = (filteredApps.maxOfOrNull { it.totalBytes } ?: 1L).coerceAtLeast(1L)
+    val totalAggregateMetricBytes = filteredApps.sumOf { getAppMetricBytes(it, sortOption) }
+    val topConsumerApp = filteredApps.maxByOrNull { getAppMetricBytes(it, sortOption) }
     val blockedCount = blockedApps.size
 
     Column(
@@ -320,7 +332,8 @@ fun AppsScreen(
         if (filteredApps.isEmpty()) {
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .testTag("apps_empty_state"),
                 contentAlignment = Alignment.Center
             ) {
@@ -342,8 +355,10 @@ fun AppsScreen(
             }
         } else {
             LazyColumn(
+                state = listState,
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .testTag("apps_list"),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -351,8 +366,10 @@ fun AppsScreen(
                     val isBlocked = viewModel.isAppBlocked(app.uid)
                     val quotaCalc = quotaCalculations[app.uid]
                     AppItemCard(
+                        modifier = Modifier.animateItem(),
                         app = app,
-                        maxBytes = maxAppBytes,
+                        sortOption = sortOption,
+                        maxBytes = maxTotalBytes,
                         isBlocked = isBlocked,
                         quotaCalculation = quotaCalc,
                         onCardClick = {
@@ -367,6 +384,21 @@ fun AppsScreen(
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Automatic Bottom Preview Summary Bar
+            AppSelectionPreviewBottomBar(
+                sortOption = sortOption,
+                totalAggregateBytes = totalAggregateMetricBytes,
+                appCount = filteredApps.size,
+                topApp = topConsumerApp,
+                onJumpToTop = {
+                    coroutineScope.launch {
+                        listState.animateScrollToItem(0)
+                    }
+                }
+            )
         }
 
         // Custom Date Range Dialog
@@ -426,7 +458,9 @@ fun AppsScreen(
 
 @Composable
 private fun AppItemCard(
+    modifier: Modifier = Modifier,
     app: AppDataUsage,
+    sortOption: AppSortOption = AppSortOption.TOTAL_USAGE,
     maxBytes: Long,
     isBlocked: Boolean,
     quotaCalculation: AppQuotaCalculation?,
@@ -436,8 +470,14 @@ private fun AppItemCard(
 ) {
     val proportion = (app.totalBytes.toFloat() / maxBytes.toFloat()).coerceIn(0.05f, 1f)
 
+    val progressColor = if (isBlocked) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MaterialTheme.colorScheme.primary
+    }
+
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .testTag("app_card_${app.packageName}")
             .clickable(onClick = onCardClick),
@@ -536,7 +576,7 @@ private fun AppItemCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Proportional Progress Bar
+            // Proportional Progress Bar scaled to selected metric
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -548,71 +588,69 @@ private fun AppItemCard(
                     modifier = Modifier
                         .fillMaxWidth(proportion)
                         .height(5.dp)
-                        .background(
-                            if (isBlocked) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.primary
-                        )
+                        .background(progressColor)
                 )
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Dual Network and RX/TX Details
+            // Dual Network and Total Usage Details
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Cellular & Wi-Fi badges
+                // Secondary / Context Badges: Always Cell & Wi-Fi
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.SignalCellularAlt,
-                            contentDescription = "Mobile",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text(
-                            text = DataFormatter.formatBytesShort(app.mobileTotalBytes),
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium)
-                        )
-                    }
-
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Wifi,
-                            contentDescription = "Wi-Fi",
-                            tint = Color(0xFF6366F1),
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text(
-                            text = DataFormatter.formatBytesShort(app.wifiTotalBytes),
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium)
-                        )
-                    }
+                    MetricBadge(
+                        Icons.Default.SignalCellularAlt,
+                        "Cell",
+                        DataFormatter.formatBytesShort(app.mobileTotalBytes),
+                        MaterialTheme.colorScheme.primary
+                    )
+                    MetricBadge(
+                        Icons.Default.Wifi,
+                        "Wi-Fi",
+                        DataFormatter.formatBytesShort(app.wifiTotalBytes),
+                        Color(0xFF818CF8)
+                    )
                 }
 
-                // Grand Total
-                Text(
-                    text = DataFormatter.formatBytes(app.totalBytes),
-                    style = MaterialTheme.typography.titleSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                // Primary Large Highlighted Metric: Always Total Usage
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = DataFormatter.formatBytes(app.totalBytes),
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                     )
-                )
+                    Text(
+                        text = "Total Usage",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Upload / Download subtext
+            // Subtext adapted to selected metric
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                val subtext = when (sortOption) {
+                    AppSortOption.UPLOAD_TX -> "↑ Upload: ${DataFormatter.formatBytesShort(app.txBytes)}   •   ↓ DL: ${DataFormatter.formatBytesShort(app.rxBytes)}"
+                    AppSortOption.DOWNLOAD_RX -> "↓ Download: ${DataFormatter.formatBytesShort(app.rxBytes)}   •   ↑ UL: ${DataFormatter.formatBytesShort(app.txBytes)}"
+                    AppSortOption.MOBILE_DATA -> "Cellular: ${DataFormatter.formatBytesShort(app.mobileTotalBytes)}   •   Wi-Fi: ${DataFormatter.formatBytesShort(app.wifiTotalBytes)}"
+                    AppSortOption.WIFI_DATA -> "Wi-Fi: ${DataFormatter.formatBytesShort(app.wifiTotalBytes)}   •   Cellular: ${DataFormatter.formatBytesShort(app.mobileTotalBytes)}"
+                    else -> "↓ DL: ${DataFormatter.formatBytesShort(app.rxBytes)}   •   ↑ UL: ${DataFormatter.formatBytesShort(app.txBytes)}"
+                }
                 Text(
-                    text = "↓ DL: ${DataFormatter.formatBytesShort(app.rxBytes)}   ↑ UL: ${DataFormatter.formatBytesShort(app.txBytes)}",
+                    text = subtext,
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp
@@ -692,6 +730,162 @@ private fun AppItemCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MetricBadge(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    tint: Color
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(13.dp)
+        )
+        Spacer(modifier = Modifier.width(3.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium)
+        )
+    }
+}
+
+@Composable
+private fun AppSelectionPreviewBottomBar(
+    sortOption: AppSortOption,
+    totalAggregateBytes: Long,
+    appCount: Int,
+    topApp: AppDataUsage?,
+    onJumpToTop: () -> Unit
+) {
+    val metricColor = when (sortOption) {
+        AppSortOption.UPLOAD_TX -> Color(0xFF38BDF8)
+        AppSortOption.DOWNLOAD_RX -> Color(0xFF34D399)
+        AppSortOption.WIFI_DATA -> Color(0xFF818CF8)
+        AppSortOption.MOBILE_DATA -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.primary
+    }
+
+    val metricIcon = when (sortOption) {
+        AppSortOption.UPLOAD_TX -> Icons.Default.ArrowUpward
+        AppSortOption.DOWNLOAD_RX -> Icons.Default.ArrowDownward
+        AppSortOption.MOBILE_DATA -> Icons.Default.SignalCellularAlt
+        AppSortOption.WIFI_DATA -> Icons.Default.Wifi
+        else -> Icons.Default.Speed
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("app_selection_preview_bar"),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(metricColor.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = metricIcon,
+                        contentDescription = null,
+                        tint = metricColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(10.dp))
+
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "${getMetricLabel(sortOption)} Total: ",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                        Text(
+                            text = DataFormatter.formatBytes(totalAggregateBytes),
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = metricColor
+                            )
+                        )
+                    }
+                    if (topApp != null) {
+                        val topBytes = getAppMetricBytes(topApp, sortOption)
+                        Text(
+                            text = "Top: ${topApp.appName} (${DataFormatter.formatBytesShort(topBytes)}) • $appCount apps",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
+                            ),
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            // Jump to Top Action Button
+            OutlinedButton(
+                onClick = onJumpToTop,
+                modifier = Modifier
+                    .testTag("jump_to_top_button")
+                    .height(32.dp),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowUpward,
+                    contentDescription = "Scroll to top",
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(text = "Top", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+private fun getAppMetricBytes(app: AppDataUsage, option: AppSortOption): Long {
+    return when (option) {
+        AppSortOption.TOTAL_USAGE -> app.totalBytes
+        AppSortOption.MOBILE_DATA -> app.mobileTotalBytes
+        AppSortOption.WIFI_DATA -> app.wifiTotalBytes
+        AppSortOption.DOWNLOAD_RX -> app.rxBytes
+        AppSortOption.UPLOAD_TX -> app.txBytes
+        AppSortOption.NAME -> app.totalBytes
+    }
+}
+
+private fun getMetricLabel(option: AppSortOption): String {
+    return when (option) {
+        AppSortOption.TOTAL_USAGE -> "Total"
+        AppSortOption.MOBILE_DATA -> "Cellular"
+        AppSortOption.WIFI_DATA -> "Wi-Fi"
+        AppSortOption.DOWNLOAD_RX -> "Download"
+        AppSortOption.UPLOAD_TX -> "Upload"
+        AppSortOption.NAME -> "Total"
     }
 }
 

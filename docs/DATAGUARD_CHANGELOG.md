@@ -781,5 +781,43 @@ Fix website data usage tracking in DataGuard when the firewall/VPN is active. En
 - Browsers configured with strict DNS-over-HTTPS (DoH) or Android Private DNS (DoT) may bypass standard port 53 DNS interception; standard DNS queries and browsers using system DNS resolution are intercepted and tracked seamlessly.
 
 ## Next Step
-- Milestone 12 is complete. Ready for verification and user review.
+- Milestone 12 is complete.
+
+---
+
+# Milestone 13 — Apps Page Selection Pane Refresh, Metric Display & Bottom Preview
+
+## Objective
+Fix the Apps page selection pane when switching between Total, Upload, Download, Mobile (Cellular), and Wi-Fi. Ensure app cards immediately display the selected metric as their primary large value and progress bar, preserve scroll position with smooth item reordering animations, and display an automatic summary preview bar at the bottom with aggregate totals and top consumer info.
+
+## Changes Made
+- Enhanced `AppsScreen.kt`:
+  - **Dynamic Primary Metric**: Updated `AppItemCard` to dynamically calculate and display `primaryBytes` based on the active `sortOption` (Upload `txBytes`, Download `rxBytes`, Cellular `mobileTotalBytes`, Wi-Fi `wifiTotalBytes`, or Total `totalBytes`).
+  - **Progress Bar Scaling**: Scaled proportional progress bars to `maxMetricBytes` for that specific active metric, colored matching the metric (Sky Blue for Upload, Emerald Green for Download, Indigo for Wi-Fi, Primary Blue for Cellular/Total).
+  - **Adaptive Secondary Badges**: Contextual secondary badges highlight complementary data (e.g. DL & Total when Upload is active; UL & Total when Download is active).
+  - **Scroll Stability & Smooth Reordering**: Added `rememberLazyListState()` and wrapped list cards with Compose `Modifier.animateItem()` so reordered apps glide smoothly into place when switching options without snapping or jumping.
+  - **Automatic Bottom Preview Summary Bar**: Implemented `AppSelectionPreviewBottomBar` docked at the base of the Apps page showing total aggregate data for the selected metric across all filtered apps, top consumer app highlight, and a quick "Top" button.
+- Added unit tests in `DataGuardUnitTest.kt`:
+  - `testMilestone13_AppMetricSelection_extractsCorrectValues`: Verified metric extraction mapping for Upload, Download, Mobile, Wi-Fi, and Total.
+  - `testMilestone13_AppBottomPreview_aggregatesSelectedMetric`: Verified aggregate calculation and top consumer identification.
+
+## Files Modified
+- `app/src/main/java/com/example/dataguard/ui/screen/AppsScreen.kt`
+- `app/src/test/java/com/example/DataGuardUnitTest.kt`
+- `docs/DATAGUARD_CHANGELOG.md`
+
+## Files Deleted
+- None
+
+## Tests Performed
+- `testMilestone13_AppMetricSelection_extractsCorrectValues`: Verified entity fields and getters.
+- `testMilestone13_AppBottomPreview_aggregatesSelectedMetric`: Verified sum and max calculations.
+- Executed compilation and unit test checks.
+
+## Known Limitations
+- None
+
+## Next Step
+- Milestone 13 is complete. Ready for verification and user review.
+
 

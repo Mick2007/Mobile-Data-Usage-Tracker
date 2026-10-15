@@ -1567,6 +1567,75 @@ class DataGuardUnitTest {
         assertEquals(54321, dstPort)
         assertEquals(8 + payload.size, udpLen)
     }
+
+    @Test
+    fun testMilestone13_AppMetricSelection_extractsCorrectValues() {
+        val app1 = com.example.dataguard.data.entity.AppDataUsage(
+            uid = 1001,
+            packageName = "com.example.video",
+            appName = "VideoApp",
+            mobileRxBytes = 1000L,
+            mobileTxBytes = 200L,
+            wifiRxBytes = 5000L,
+            wifiTxBytes = 800L
+        )
+
+        // Verify metric mapping
+        assertEquals(7000L, app1.totalBytes)          // 1000 + 200 + 5000 + 800
+        assertEquals(1200L, app1.mobileTotalBytes)     // 1000 + 200
+        assertEquals(5800L, app1.wifiTotalBytes)       // 5000 + 800
+        assertEquals(6000L, app1.rxBytes)              // 1000 + 5000 (Download)
+        assertEquals(1000L, app1.txBytes)              // 200 + 800 (Upload)
+    }
+
+    @Test
+    fun testMilestone13_AppBottomPreview_aggregatesSelectedMetric() {
+        val apps = listOf(
+            com.example.dataguard.data.entity.AppDataUsage(
+                uid = 1001,
+                packageName = "com.app.one",
+                appName = "AppOne",
+                mobileRxBytes = 100L,
+                mobileTxBytes = 50L,
+                wifiRxBytes = 400L,
+                wifiTxBytes = 200L
+            ),
+            com.example.dataguard.data.entity.AppDataUsage(
+                uid = 1002,
+                packageName = "com.app.two",
+                appName = "AppTwo",
+                mobileRxBytes = 300L,
+                mobileTxBytes = 150L,
+                wifiRxBytes = 100L,
+                wifiTxBytes = 50L
+            )
+        )
+
+        // Upload aggregate: app1.txBytes (250) + app2.txBytes (200) = 450
+        val totalUpload = apps.sumOf { it.txBytes }
+        assertEquals(450L, totalUpload)
+
+        // Download aggregate: app1.rxBytes (500) + app2.rxBytes (400) = 900
+        val totalDownload = apps.sumOf { it.rxBytes }
+        assertEquals(900L, totalDownload)
+
+        // Cellular aggregate: app1.mobileTotal (150) + app2.mobileTotal (450) = 600
+        val totalCellular = apps.sumOf { it.mobileTotalBytes }
+        assertEquals(600L, totalCellular)
+
+        // Wi-Fi aggregate: app1.wifiTotal (600) + app2.wifiTotal (150) = 750
+        val totalWifi = apps.sumOf { it.wifiTotalBytes }
+        assertEquals(750L, totalWifi)
+
+        // Top consumer for Upload is AppOne (250 > 200)
+        val topUpload = apps.maxByOrNull { it.txBytes }
+        assertEquals("AppOne", topUpload?.appName)
+
+        // Top consumer for Cellular is AppTwo (450 > 150)
+        val topCellular = apps.maxByOrNull { it.mobileTotalBytes }
+        assertEquals("AppTwo", topCellular?.appName)
+    }
 }
+
 
 

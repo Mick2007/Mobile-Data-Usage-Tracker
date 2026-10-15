@@ -147,6 +147,12 @@ class DashboardViewModel(
     val dailyLimitMB: Long get() = DataGuardApp.instance.dailyLimitMB
     val weeklyLimitMB: Long get() = DataGuardApp.instance.weeklyLimitMB
     val monthlyLimitMB: Long get() = DataGuardApp.instance.monthlyLimitMB
+    // 5. Remaining data allowance
+    private val _remainingAllowanceMB = MutableStateFlow<Long?>(null)
+    val remainingAllowanceMB: StateFlow<Long?> = _remainingAllowanceMB.asStateFlow()
+
+    private val _allowanceProgress = MutableStateFlow(0f)
+    val allowanceProgress: StateFlow<Float> = _allowanceProgress.asStateFlow()
 
     init {
         checkPermission()
@@ -704,12 +710,6 @@ class DashboardViewModel(
         return maxUsage / (1024.0 * 1024.0)
     }
 
-    // 5. Remaining data allowance
-    private val _remainingAllowanceMB = MutableStateFlow<Long?>(null)
-    val remainingAllowanceMB: StateFlow<Long?> = _remainingAllowanceMB.asStateFlow()
-
-    private val _allowanceProgress = MutableStateFlow(0f)
-    val allowanceProgress: StateFlow<Float> = _allowanceProgress.asStateFlow()
 
     private fun recalculateAllowanceAndTotals() {
         val limitMB = if (dailyLimitMB > 0) dailyLimitMB else monthlyLimitMB
