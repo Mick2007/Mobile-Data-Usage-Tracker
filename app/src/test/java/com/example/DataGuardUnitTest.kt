@@ -660,6 +660,61 @@ class DataGuardUnitTest {
     }
 
     @Test
+    fun testStep5_FirewallEngine_networkSelectiveBlockingAndDomainInference() {
+        val engine = com.example.dataguard.vpn.engine.FirewallEngine()
+
+        val rules = listOf(
+            BlockedAppEntity(
+                uid = 10300,
+                packageName = "com.whatsapp",
+                appName = "WhatsApp",
+                blockedAt = 3000L,
+                reason = "Mobile data saver",
+                blockMobile = true,
+                blockWifi = false
+            ),
+            BlockedAppEntity(
+                uid = 10400,
+                packageName = "com.netflix.mediaclient",
+                appName = "Netflix",
+                blockedAt = 4000L,
+                reason = "Heavy video saver",
+                blockMobile = true,
+                blockWifi = true
+            )
+        )
+        engine.updateRulesFromEntities(rules)
+
+        // Verify getBlockedPackages for MOBILE vs WIFI
+        val mobileBlocked = engine.getBlockedPackages(com.example.dataguard.vpn.engine.NetworkInterfaceType.MOBILE)
+        val wifiBlocked = engine.getBlockedPackages(com.example.dataguard.vpn.engine.NetworkInterfaceType.WIFI)
+
+        assertTrue(mobileBlocked.contains("com.whatsapp"))
+        assertTrue(mobileBlocked.contains("com.netflix.mediaclient"))
+        assertEquals(2, mobileBlocked.size)
+
+        assertFalse(wifiBlocked.contains("com.whatsapp"))
+        assertTrue(wifiBlocked.contains("com.netflix.mediaclient"))
+        assertEquals(1, wifiBlocked.size)
+
+        // Verify evaluateConnection when packageName is null but domain matches WhatsApp
+        val evalMobile = engine.evaluateConnection(
+            domain = "g.whatsapp.net",
+            packageName = null,
+            networkType = com.example.dataguard.vpn.engine.NetworkInterfaceType.MOBILE
+        )
+        assertEquals(com.example.dataguard.vpn.engine.FirewallDecision.BLOCK, evalMobile.decision)
+        assertEquals("com.whatsapp", evalMobile.packageName)
+
+        val evalWifi = engine.evaluateConnection(
+            domain = "g.whatsapp.net",
+            packageName = null,
+            networkType = com.example.dataguard.vpn.engine.NetworkInterfaceType.WIFI
+        )
+        assertEquals(com.example.dataguard.vpn.engine.FirewallDecision.ALLOW, evalWifi.decision)
+    }
+
+    @Test
     fun testStep5_FirewallEngine_failOpenOnSafetyException() {
         val engine = com.example.dataguard.vpn.engine.FirewallEngine()
         // Ensure unknown package or invalid UID safely evaluates to ALLOW without throwing

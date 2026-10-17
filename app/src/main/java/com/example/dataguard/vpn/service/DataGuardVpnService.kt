@@ -1,8 +1,13 @@
 package com.example.dataguard.vpn.service
 
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -10,15 +15,19 @@ import android.util.Log
 import com.example.MainActivity
 import com.example.dataguard.DataGuardApp
 import com.example.dataguard.utils.NotificationHelper
+import com.example.dataguard.vpn.engine.NetworkInterfaceType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class DataGuardVpnService : VpnService() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var vpnInterface: ParcelFileDescriptor? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var lastObservedNetworkType: NetworkInterfaceType? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: ACTION_START
@@ -67,7 +76,7 @@ class DataGuardVpnService : VpnService() {
         // 3. Clean up any existing interface before re-establishing
         closeVpnInterface()
 
-        // 4. Configure local VPN tunnel interface
+        // 4. Configure local VPN tunnel interface with dynamic sinkhole routing
         try {
             val configIntent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -79,31 +88,54 @@ class DataGuardVpnService : VpnService() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
+            val currentNetworkType = getActiveNetworkInterfaceType()
+            lastObservedNetworkType = currentNetworkType
+            registerNetworkCallback()
+
+            val blockedPkgs = sessionManager.firewallEngine.getBlockedPackages(currentNetworkType)
+            val domainRulePkgs = sessionManager.firewallEngine.getActiveDomainRules()
+                .mapNotNull { it.packageName }
+                .toSet()
+
+            // Target packages that must be routed into the local VPN sinkhole
+            val targetPackages = (blockedPkgs + domainRulePkgs).filter { pkg ->
+                pkg != packageName && pkg != "android" && pkg != "android.system" && pkg.isNotBlank()
+            }.toSet()
+
             val builder = Builder()
                 .setSession(SESSION_NAME)
                 .setMtu(1500)
                 .addAddress("10.1.10.1", 32)
                 .addDnsServer("10.1.10.2")
-                .addRoute("10.1.10.2", 32)
-                .addRoute("10.1.10.0", 24)
                 .allowBypass()
                 .setConfigureIntent(configurePendingIntent)
 
-            // Dynamic application-level firewall enforcement
-            val blockedPkgs = sessionManager.firewallEngine.getBlockedPackages()
             var rulesEnforcedCount = 0
-            for (pkg in blockedPkgs) {
-                // Never block our own application package or system server core
-                if (pkg == packageName || pkg == "android" || pkg == "android.system") continue
-                try {
-                    builder.addDisallowedApplication(pkg)
-                    rulesEnforcedCount++
-                } catch (e: Exception) {
-                    // PackageManager.NameNotFoundException or fail-open safety
-                    Log.w(TAG, "Cannot enforce firewall rule for package $pkg (failing open): ${e.message}")
+            if (targetPackages.isNotEmpty()) {
+                // SINKHOLE ROUTING: Route blocked applications into the local VPN tunnel
+                // Non-blocked apps are NOT added to addAllowedApplication, so Android routes them directly to native internet
+                for (pkg in targetPackages) {
+                    try {
+                        builder.addAllowedApplication(pkg)
+                        rulesEnforcedCount++
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Cannot route package $pkg into VPN sinkhole: ${e.message}")
+                    }
                 }
             }
-            Log.i(TAG, "Configured firewall with $rulesEnforcedCount blocked applications")
+
+            if (rulesEnforcedCount > 0) {
+                // Sinks all traffic from the blocked applications into TUN
+                builder.addRoute("0.0.0.0", 0)
+            } else {
+                // If no apps are currently blocked on this interface, route only DataGuard itself and DNS
+                // so no third-party applications have their traffic intercepted
+                try {
+                    builder.addAllowedApplication(packageName)
+                } catch (_: Exception) {}
+                builder.addRoute("10.1.10.2", 32)
+            }
+            Log.i(TAG, "Configured firewall on $currentNetworkType with $rulesEnforcedCount blocked applications")
 
             vpnInterface = builder.establish()
 
@@ -196,12 +228,78 @@ class DataGuardVpnService : VpnService() {
     }
 
     private fun teardownResources() {
+        unregisterNetworkCallback()
         try {
             DataGuardApp.instance.vpnSessionManager.packetProcessor.stop()
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping packet processor: ${e.message}")
         }
         closeVpnInterface()
+    }
+
+    private fun getActiveNetworkInterfaceType(): NetworkInterfaceType {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return NetworkInterfaceType.ANY
+        val activeNetwork = cm.activeNetwork ?: return NetworkInterfaceType.ANY
+        val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return NetworkInterfaceType.ANY
+        return when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkInterfaceType.WIFI
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkInterfaceType.MOBILE
+            else -> NetworkInterfaceType.ANY
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                    val currentType = getActiveNetworkInterfaceType()
+                    if (lastObservedNetworkType != null && lastObservedNetworkType != currentType) {
+                        Log.i(TAG, "Network switched from $lastObservedNetworkType to $currentType, updating firewall rules")
+                        lastObservedNetworkType = currentType
+                        serviceScope.launch(Dispatchers.Main) {
+                            if (DataGuardApp.instance.vpnSessionManager.vpnState.value.status == com.example.dataguard.vpn.model.VpnStatus.ACTIVE) {
+                                handleStart()
+                            }
+                        }
+                    }
+                }
+
+                override fun onAvailable(network: Network) {
+                    val currentType = getActiveNetworkInterfaceType()
+                    if (lastObservedNetworkType != null && lastObservedNetworkType != currentType) {
+                        Log.i(TAG, "Network available: $currentType, updating firewall rules")
+                        lastObservedNetworkType = currentType
+                        serviceScope.launch(Dispatchers.Main) {
+                            if (DataGuardApp.instance.vpnSessionManager.vpnState.value.status == com.example.dataguard.vpn.model.VpnStatus.ACTIVE) {
+                                handleStart()
+                            }
+                        }
+                    }
+                }
+            }
+            cm.registerNetworkCallback(request, callback)
+            networkCallback = callback
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register network callback: ${e.message}")
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        networkCallback?.let { cb ->
+            try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                cm?.unregisterNetworkCallback(cb)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister network callback: ${e.message}")
+            }
+        }
+        networkCallback = null
     }
 
     private fun closeVpnInterface() {

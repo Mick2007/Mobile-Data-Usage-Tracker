@@ -3,30 +3,40 @@ package com.example.dataguard.ui.component
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Language
@@ -34,16 +44,22 @@ import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,6 +73,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -85,15 +105,38 @@ fun NetworkTimelineGraph(
     selectedPoint: NetworkTimelinePoint?,
     selectedIntervalDetails: GraphIntervalDetails?,
     selectedFilter: GraphFilter,
-    selectedTimeRange: DashboardTimeRange,
+    selectedDayMillis: Long,
     onSelectFilter: (GraphFilter) -> Unit,
-    onSelectTimeRange: (DashboardTimeRange) -> Unit,
+    onPreviousDay: () -> Unit,
+    onNextDay: () -> Unit,
+    onSelectDay: (Long) -> Unit,
     onIntervalTapped: (NetworkTimelinePoint) -> Unit,
     onAppTapped: (String, Int) -> Unit,
     onDomainTapped: (String) -> Unit,
-    onOpenCustomDateDialog: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    var showDatePickerDialog by remember { mutableStateOf(false) }
+
+    val todayCal = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }
+    val todayStart = todayCal.timeInMillis
+    val isToday = selectedDayMillis >= todayStart
+    val isYesterday = selectedDayMillis in (todayStart - 24 * 60 * 60 * 1000L) until todayStart
+
+    val dateLabel = remember(selectedDayMillis) {
+        val dayFormat = SimpleDateFormat("EEE, d MMM", Locale.getDefault())
+        val dateStr = dayFormat.format(Date(selectedDayMillis))
+        when {
+            isToday -> "Today ($dateStr)"
+            isYesterday -> "Yesterday ($dateStr)"
+            else -> dateStr
+        }
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -103,125 +146,212 @@ fun NetworkTimelineGraph(
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            // Header: Title & Time Range Selectors
+            // Header: Title & Subtitle
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Timeline,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Network Activity Timeline",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Tap any interval to inspect active apps & domains",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Timeline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Network Activity Timeline",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "2-hour intervals • Tap to inspect active apps & domains",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // Time Range Selector Chips: Today, 7 Days, 30 Days, Custom
-            Row(
+            // Controls Bar: Date Navigation & Network Interface Dropdown Selection
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                DashboardTimeRange.values().forEach { range ->
-                    val isSelected = selectedTimeRange == range
+                // Date Navigator (Previous Day, Pick Date, Next Day)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    IconButton(
+                        onClick = onPreviousDay,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("btn_prev_day")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronLeft,
+                            contentDescription = "Previous Day",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                         modifier = Modifier
-                            .clickable {
-                                if (range == DashboardTimeRange.CUSTOM) {
-                                    onOpenCustomDateDialog()
-                                } else {
-                                    onSelectTimeRange(range)
-                                }
-                            }
-                            .testTag("time_range_chip_${range.name}")
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { showDatePickerDialog = true }
+                            .testTag("btn_pick_date")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            if (range == DashboardTimeRange.CUSTOM) {
-                                Icon(
-                                    imageVector = Icons.Default.DateRange,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp),
-                                    tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                            }
+                            Icon(
+                                imageVector = Icons.Default.DateRange,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
                             Text(
-                                text = range.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                text = dateLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
                     }
+
+                    IconButton(
+                        onClick = onNextDay,
+                        enabled = !isToday,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("btn_next_day")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ChevronRight,
+                            contentDescription = "Next Day",
+                            tint = if (!isToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(10.dp))
+                // Network Interface Dropdown (Combined, Mobile Data, Wi-Fi)
+                var isDropdownExpanded by remember { mutableStateOf(false) }
 
-            // Filter Chips: All, Mobile, Wi-Fi, Apps, Websites
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                GraphFilter.values().forEach { filter ->
-                    val isSelected = selectedFilter == filter
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onSelectFilter(filter) },
-                        label = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = when (filter) {
-                                        GraphFilter.ALL -> Icons.Default.FilterList
-                                        GraphFilter.MOBILE -> Icons.Default.PhoneAndroid
-                                        GraphFilter.WIFI -> Icons.Default.Wifi
-                                        GraphFilter.APPS -> Icons.Default.Security
-                                        GraphFilter.WEBSITES -> Icons.Default.Language
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(filter.label)
-                            }
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        ),
-                        modifier = Modifier.testTag("graph_filter_${filter.name}")
-                    )
+                Box {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { isDropdownExpanded = true }
+                            .testTag("network_type_dropdown")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = when (selectedFilter) {
+                                    GraphFilter.MOBILE -> Icons.Default.PhoneAndroid
+                                    GraphFilter.WIFI -> Icons.Default.Wifi
+                                    else -> Icons.Default.FilterList
+                                },
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = when (selectedFilter) {
+                                    GraphFilter.MOBILE -> "Mobile Data"
+                                    GraphFilter.WIFI -> "Wi-Fi"
+                                    else -> "Combined"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ArrowDropDown,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    DropdownMenu(
+                        expanded = isDropdownExpanded,
+                        onDismissRequest = { isDropdownExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Combined (Data + Wi-Fi)") },
+                            leadingIcon = {
+                                Icon(Icons.Default.FilterList, contentDescription = null, modifier = Modifier.size(18.dp))
+                            },
+                            trailingIcon = {
+                                if (selectedFilter == GraphFilter.ALL) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                }
+                            },
+                            onClick = {
+                                onSelectFilter(GraphFilter.ALL)
+                                isDropdownExpanded = false
+                            },
+                            modifier = Modifier.testTag("dropdown_item_combined")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Mobile Data") },
+                            leadingIcon = {
+                                Icon(Icons.Default.PhoneAndroid, contentDescription = null, modifier = Modifier.size(18.dp))
+                            },
+                            trailingIcon = {
+                                if (selectedFilter == GraphFilter.MOBILE) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                }
+                            },
+                            onClick = {
+                                onSelectFilter(GraphFilter.MOBILE)
+                                isDropdownExpanded = false
+                            },
+                            modifier = Modifier.testTag("dropdown_item_mobile")
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Wi-Fi") },
+                            leadingIcon = {
+                                Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                            },
+                            trailingIcon = {
+                                if (selectedFilter == GraphFilter.WIFI) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                }
+                            },
+                            onClick = {
+                                onSelectFilter(GraphFilter.WIFI)
+                                isDropdownExpanded = false
+                            },
+                            modifier = Modifier.testTag("dropdown_item_wifi")
+                        )
+                    }
                 }
             }
 
@@ -241,7 +371,7 @@ fun NetworkTimelineGraph(
 
                 if (selectedPoint != null) {
                     Text(
-                        text = "Selected: ${selectedPoint.label}",
+                        text = "Interval: ${selectedPoint.label}",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -251,7 +381,7 @@ fun NetworkTimelineGraph(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Timeline Canvas Area
+            // Timeline Canvas Area with Horizontal Scrolling (minimum 4 bars visible per screen viewport)
             TimelineGraphCanvas(
                 points = points,
                 selectedPoint = selectedPoint,
@@ -284,6 +414,17 @@ fun NetworkTimelineGraph(
             }
         }
     }
+
+    if (showDatePickerDialog) {
+        TimelineDatePickerDialog(
+            currentSelectedMillis = selectedDayMillis,
+            onDismiss = { showDatePickerDialog = false },
+            onDateSelected = { millis ->
+                onSelectDay(millis)
+                showDatePickerDialog = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -305,7 +446,10 @@ private fun LegendItem(label: String, color: Color) {
 }
 
 /**
- * High-performance Canvas rendering of the timeline graph.
+ * High-performance horizontal-scrolling Canvas rendering of the timeline graph.
+ * Shows 12 2-hour intervals across the 24-hour day, with horizontal scrolling
+ * ensuring at least 4 bars are visible in the viewport at once, and bar heights
+ * dynamically scaled in direct response to the max data consumed.
  */
 @Composable
 private fun TimelineGraphCanvas(
@@ -318,134 +462,348 @@ private fun TimelineGraphCanvas(
     val uploadColor = Color(0xFF3B82F6)
     val selectionOverlayColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
     val selectionBorderColor = MaterialTheme.colorScheme.primary
-    val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+    val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
 
-    val maxBytes = remember(points, filter) {
-        val maxVal = points.maxOfOrNull { pt ->
-            when (filter) {
-                GraphFilter.MOBILE -> pt.mobileBytes
-                GraphFilter.WIFI -> pt.wifiBytes
-                else -> pt.totalBytes
-            }
-        } ?: 1024L
-        maxOf(maxVal, 1024L * 1024L) // at least 1MB scale for clean rendering
-    }
-
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(180.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
-            .pointerInput(points) {
-                detectTapGestures { offset ->
-                    if (points.isNotEmpty()) {
-                        val colWidth = size.width / points.size.toFloat()
-                        val tappedIndex = (offset.x / colWidth).toInt().coerceIn(0, points.size - 1)
-                        onTapPoint(points[tappedIndex])
+    ) {
+        val containerWidth = maxWidth
+        // Guarantee at least 4 bars are visible across the screen viewport
+        val colWidthDp = (containerWidth / 4f).coerceAtLeast(72.dp)
+        val barCount = if (points.isNotEmpty()) points.size else 12
+        val totalWidthDp = colWidthDp * barCount
+        val scrollState = rememberScrollState()
+
+        // Dynamic maxBytes scaled in direct response to the max data consumed
+        val maxBytes = remember(points, filter) {
+            val maxVal = points.maxOfOrNull { pt ->
+                when (filter) {
+                    GraphFilter.MOBILE -> pt.mobileBytes
+                    GraphFilter.WIFI -> pt.wifiBytes
+                    else -> pt.totalBytes
+                }
+            } ?: 0L
+            if (maxVal > 0L) (maxVal * 1.08).toLong() else 1024L
+        }
+
+        // Auto-scroll so selected point is in view
+        LaunchedEffect(selectedPoint, points) {
+            if (points.isNotEmpty() && selectedPoint != null) {
+                val idx = points.indexOfFirst {
+                    it.timestamp == selectedPoint.timestamp || it.startTime == selectedPoint.startTime
+                }
+                if (idx > 2 && scrollState.maxValue > 0) {
+                    val target = ((idx - 1) * (scrollState.maxValue.toFloat() / (points.size - 4).coerceAtLeast(1))).toInt()
+                    scrollState.animateScrollTo(target.coerceIn(0, scrollState.maxValue))
+                }
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(scrollState)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(totalWidthDp)
+                        .height(180.dp)
+                        .pointerInput(points, filter) {
+                            detectTapGestures { offset ->
+                                if (points.isNotEmpty()) {
+                                    val colWidthPx = size.width / points.size.toFloat()
+                                    val tappedIndex = (offset.x / colWidthPx).toInt().coerceIn(0, points.size - 1)
+                                    onTapPoint(points[tappedIndex])
+                                }
+                            }
+                        }
+                        .testTag("timeline_canvas_area")
+                ) {
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                    ) {
+                        val width = size.width
+                        val height = size.height
+                        val bottomPadding = 26.dp.toPx()
+                        val graphHeight = height - bottomPadding
+
+                        // 1. Draw horizontal gridlines (0%, 50%, 100%)
+                        val gridY50 = graphHeight * 0.5f
+                        drawLine(color = gridColor, start = Offset(0f, 0f), end = Offset(width, 0f), strokeWidth = 1f)
+                        drawLine(color = gridColor, start = Offset(0f, gridY50), end = Offset(width, gridY50), strokeWidth = 1f)
+                        drawLine(color = gridColor, start = Offset(0f, graphHeight), end = Offset(width, graphHeight), strokeWidth = 1f)
+
+                        if (points.isEmpty()) return@Canvas
+
+                        val colWidth = width / points.size.toFloat()
+                        val barSpacing = (colWidth * 0.28f).coerceAtLeast(6f)
+                        val barWidth = (colWidth - barSpacing).coerceAtLeast(10f)
+
+                        points.forEachIndexed { index, point ->
+                            val xLeft = index * colWidth + (barSpacing / 2f)
+
+                            val valTotal = when (filter) {
+                                GraphFilter.MOBILE -> point.mobileBytes
+                                GraphFilter.WIFI -> point.wifiBytes
+                                else -> point.totalBytes
+                            }
+
+                            val valDl = point.downloadBytes
+                            val valUl = point.uploadBytes
+
+                            val totalRatio = (valTotal.toFloat() / maxBytes.toFloat()).coerceIn(0f, 1f)
+                            val totalH = (totalRatio * graphHeight).coerceAtLeast(if (valTotal > 0) 6f else 0f)
+
+                            val dlRatio = if (valTotal > 0) (valDl.toFloat() / valTotal.toFloat()) else 0.5f
+                            val dlH = totalH * dlRatio
+                            val ulH = totalH - dlH
+
+                            val yBottom = graphHeight
+
+                            // Draw Download portion (Green)
+                            if (dlH > 0) {
+                                drawRoundRect(
+                                    color = downloadColor,
+                                    topLeft = Offset(xLeft, yBottom - dlH),
+                                    size = Size(barWidth, dlH),
+                                    cornerRadius = CornerRadius(4f, 4f)
+                                )
+                            }
+
+                            // Draw Upload portion (Blue, stacked above download)
+                            if (ulH > 0) {
+                                drawRoundRect(
+                                    color = uploadColor,
+                                    topLeft = Offset(xLeft, yBottom - totalH),
+                                    size = Size(barWidth, ulH),
+                                    cornerRadius = CornerRadius(4f, 4f)
+                                )
+                            }
+
+                            // Selected column indicator
+                            if (selectedPoint?.timestamp == point.timestamp || selectedPoint?.startTime == point.startTime) {
+                                drawRoundRect(
+                                    color = selectionOverlayColor,
+                                    topLeft = Offset(index * colWidth, 0f),
+                                    size = Size(colWidth, graphHeight),
+                                    cornerRadius = CornerRadius(6f, 6f)
+                                )
+                                drawRoundRect(
+                                    color = selectionBorderColor,
+                                    topLeft = Offset(xLeft - 2f, (yBottom - totalH - 2f).coerceAtLeast(0f)),
+                                    size = Size(barWidth + 4f, totalH + 4f),
+                                    cornerRadius = CornerRadius(6f, 6f),
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                                )
+                            }
+                        }
+                    }
+
+                    // X-axis 2-hour interval labels positioned under each column
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.BottomStart)
+                            .padding(bottom = 4.dp),
+                        horizontalArrangement = Arrangement.Start
+                    ) {
+                        points.forEach { point ->
+                            val isSelected = selectedPoint?.timestamp == point.timestamp || selectedPoint?.startTime == point.startTime
+                            Box(
+                                modifier = Modifier.width(colWidthDp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = point.label,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
             }
-            .testTag("timeline_canvas_area")
-    ) {
-        Canvas(modifier = Modifier.fillMaxWidth().height(180.dp)) {
-            val width = size.width
-            val height = size.height
-            val bottomPadding = 24.dp.toPx()
-            val graphHeight = height - bottomPadding
 
-            // 1. Draw horizontal gridlines (0%, 50%, 100%)
-            val gridY50 = graphHeight * 0.5f
-            drawLine(color = gridColor, start = Offset(0f, 0f), end = Offset(width, 0f), strokeWidth = 1f)
-            drawLine(color = gridColor, start = Offset(0f, gridY50), end = Offset(width, gridY50), strokeWidth = 1f)
-            drawLine(color = gridColor, start = Offset(0f, graphHeight), end = Offset(width, graphHeight), strokeWidth = 1f)
+            // Scroll hint & Peak Data Indicator
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "⇄ Scroll to view all 24 hours (12 intervals)",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                )
 
-            if (points.isEmpty()) return@Canvas
+                val maxConsumedLabel = points.maxOfOrNull { pt ->
+                    when (filter) {
+                        GraphFilter.MOBILE -> pt.mobileBytes
+                        GraphFilter.WIFI -> pt.wifiBytes
+                        else -> pt.totalBytes
+                    }
+                } ?: 0L
 
-            val colWidth = width / points.size.toFloat()
-            val barSpacing = (colWidth * 0.25f).coerceAtLeast(2f)
-            val barWidth = (colWidth - barSpacing).coerceAtLeast(3f)
-
-            points.forEachIndexed { index, point ->
-                val xLeft = index * colWidth + (barSpacing / 2f)
-
-                val valTotal = when (filter) {
-                    GraphFilter.MOBILE -> point.mobileBytes
-                    GraphFilter.WIFI -> point.wifiBytes
-                    else -> point.totalBytes
-                }
-
-                val valDl = point.downloadBytes
-                val valUl = point.uploadBytes
-
-                val totalRatio = (valTotal.toFloat() / maxBytes.toFloat()).coerceIn(0f, 1f)
-                val totalH = (totalRatio * graphHeight).coerceAtLeast(if (valTotal > 0) 4f else 0f)
-
-                val dlRatio = if (valTotal > 0) (valDl.toFloat() / valTotal.toFloat()) else 0.5f
-                val dlH = totalH * dlRatio
-                val ulH = totalH - dlH
-
-                val yBottom = graphHeight
-
-                // Draw Download portion (Green)
-                if (dlH > 0) {
-                    drawRoundRect(
-                        color = downloadColor,
-                        topLeft = Offset(xLeft, yBottom - dlH),
-                        size = Size(barWidth, dlH),
-                        cornerRadius = CornerRadius(3f, 3f)
-                    )
-                }
-
-                // Draw Upload portion (Blue, stacked above download)
-                if (ulH > 0) {
-                    drawRoundRect(
-                        color = uploadColor,
-                        topLeft = Offset(xLeft, yBottom - totalH),
-                        size = Size(barWidth, ulH),
-                        cornerRadius = CornerRadius(3f, 3f)
-                    )
-                }
-
-                // Selected column indicator
-                if (selectedPoint?.timestamp == point.timestamp || selectedPoint?.startTime == point.startTime) {
-                    drawRoundRect(
-                        color = selectionOverlayColor,
-                        topLeft = Offset(index * colWidth, 0f),
-                        size = Size(colWidth, graphHeight),
-                        cornerRadius = CornerRadius(4f, 4f)
-                    )
-                    drawRoundRect(
-                        color = selectionBorderColor,
-                        topLeft = Offset(xLeft - 1f, yBottom - totalH - 2f),
-                        size = Size(barWidth + 2f, totalH + 4f),
-                        cornerRadius = CornerRadius(4f, 4f),
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                    )
-                }
-            }
-        }
-
-        // X-axis date / hour labels below the graph
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            val step = (points.size / 5).coerceAtLeast(1)
-            points.forEachIndexed { index, point ->
-                if (index % step == 0 || index == points.size - 1) {
-                    Text(
-                        text = point.label,
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                Text(
+                    text = "Peak: ${DataFormatter.formatBytes(maxConsumedLabel)}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
+}
+
+@Composable
+private fun TimelineDatePickerDialog(
+    currentSelectedMillis: Long,
+    onDismiss: () -> Unit,
+    onDateSelected: (Long) -> Unit
+) {
+    val cal = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }
+    val todayMillis = cal.timeInMillis
+
+    // Generate past 30 days
+    val datesList = remember {
+        val list = mutableListOf<Long>()
+        val tempCal = (cal.clone() as Calendar)
+        for (i in 0 until 30) {
+            list.add(tempCal.timeInMillis)
+            tempCal.add(Calendar.DAY_OF_YEAR, -1)
+        }
+        list
+    }
+
+    val dayNameFormat = SimpleDateFormat("EEEE", Locale.getDefault())
+    val fullDateFormat = SimpleDateFormat("d MMMM yyyy", Locale.getDefault())
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DateRange,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Select Day for Timeline",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Choose any date from the last 30 days to view its 24-hour activity:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(260.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(datesList) { dateMillis ->
+                        val isSelected = dateMillis == currentSelectedMillis
+                        val isTodayItem = dateMillis == todayMillis
+                        val isYesterdayItem = dateMillis == (todayMillis - 24 * 60 * 60 * 1000L)
+
+                        val badgeLabel = when {
+                            isTodayItem -> "Today"
+                            isYesterdayItem -> "Yesterday"
+                            else -> null
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onDateSelected(dateMillis) }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = dayNameFormat.format(Date(dateMillis)),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                        )
+                                        if (badgeLabel != null) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                            ) {
+                                                Text(
+                                                    text = badgeLabel,
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Text(
+                                        text = fullDateFormat.format(Date(dateMillis)),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = "Selected",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 /**

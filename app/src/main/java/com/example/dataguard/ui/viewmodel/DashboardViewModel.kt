@@ -29,6 +29,8 @@ import com.example.dataguard.vpn.engine.DomainNormalizer
 import com.example.dataguard.vpn.engine.FirewallDecision
 import com.example.dataguard.vpn.engine.FirewallEvaluationResult
 import com.example.dataguard.vpn.engine.RuleType
+import android.net.ConnectivityManager
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -99,6 +101,47 @@ class DashboardViewModel(
 
     // Network Flow Records Cache
     private var allCachedFlows: List<NetworkFlowEntity> = emptyList()
+
+    private fun getStartOfDay(timeMillis: Long): Long {
+        return Calendar.getInstance().apply {
+            timeInMillis = timeMillis
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+
+    private val _selectedDateMillis = MutableStateFlow(getStartOfDay(System.currentTimeMillis()))
+    val selectedDateMillis: StateFlow<Long> = _selectedDateMillis.asStateFlow()
+
+    fun goToPreviousDay() {
+        val cal = Calendar.getInstance().apply {
+            timeInMillis = _selectedDateMillis.value
+            add(Calendar.DAY_OF_YEAR, -1)
+        }
+        _selectedDateMillis.value = getStartOfDay(cal.timeInMillis)
+        generateTimelinePoints()
+    }
+
+    fun goToNextDay() {
+        val todayStart = getStartOfDay(System.currentTimeMillis())
+        if (_selectedDateMillis.value < todayStart) {
+            val cal = Calendar.getInstance().apply {
+                timeInMillis = _selectedDateMillis.value
+                add(Calendar.DAY_OF_YEAR, 1)
+            }
+            val next = getStartOfDay(cal.timeInMillis)
+            _selectedDateMillis.value = minOf(next, todayStart)
+            generateTimelinePoints()
+        }
+    }
+
+    fun setSelectedDate(timeMillis: Long) {
+        val todayStart = getStartOfDay(System.currentTimeMillis())
+        _selectedDateMillis.value = minOf(getStartOfDay(timeMillis), todayStart)
+        generateTimelinePoints()
+    }
 
     // --- Timeline Graph & Filtering ---
     private val _selectedTimeRange = MutableStateFlow(DashboardTimeRange.TODAY)
@@ -274,186 +317,95 @@ class DashboardViewModel(
     }
 
     /**
-     * Generates normalized timeline data points for the graph based on selected time range.
+     * Generates normalized timeline data points for the graph based on selected date and time range.
      */
     fun generateTimelinePoints() {
-        val range = _selectedTimeRange.value
-        val now = System.currentTimeMillis()
         val points = mutableListOf<NetworkTimelinePoint>()
+        val now = System.currentTimeMillis()
+        val selectedDayStart = _selectedDateMillis.value
+        val todayStart = getStartOfDay(now)
+        val isToday = selectedDayStart >= todayStart
+        val hourMs = 60 * 60 * 1000L
 
-        when (range) {
-            DashboardTimeRange.TODAY -> {
-                val cal = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, 0)
-                    set(Calendar.MINUTE, 0)
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
-                val startOfToday = cal.timeInMillis
-                val hourMs = 60 * 60 * 1000L
+        // 12 2-hour buckets across the selected day (24 hours)
+        for (i in 0 until 12) {
+            val bStart = selectedDayStart + (i * 2 * hourMs)
+            val bEnd = bStart + (2 * hourMs)
+            val label = String.format(Locale.US, "%02d:00", i * 2)
 
-                // 12 2-hour buckets across today
-                for (i in 0 until 12) {
-                    val bStart = startOfToday + (i * 2 * hourMs)
-                    val bEnd = bStart + (2 * hourMs)
-                    val label = String.format(Locale.US, "%02d:00", i * 2)
+            val bucketFlows = allCachedFlows.filter { it.lastSeen in bStart until bEnd }
+            val flowUl = bucketFlows.sumOf { it.uploadBytes }
+            val flowDl = bucketFlows.sumOf { it.downloadBytes }
+            val flowMob = bucketFlows.filter { it.networkType == "MOBILE" }.sumOf { it.totalBytes }
+            val flowWifi = bucketFlows.filter { it.networkType == "WIFI" }.sumOf { it.totalBytes }
 
-                    val bucketFlows = allCachedFlows.filter { it.lastSeen in bStart until bEnd }
-                    val ul = bucketFlows.sumOf { it.uploadBytes }
-                    val dl = bucketFlows.sumOf { it.downloadBytes }
-                    val mob = bucketFlows.filter { it.networkType == "MOBILE" }.sumOf { it.totalBytes }
-                    val wifi = bucketFlows.filter { it.networkType == "WIFI" }.sumOf { it.totalBytes }
-
-                    // Baseline from latest usage if flows haven't accumulated yet
-                    val totalBase = ul + dl
-                    val (finalUl, finalDl) = if (totalBase == 0L && i == Calendar.getInstance().get(Calendar.HOUR_OF_DAY) / 2) {
-                        val latest = _latestUsage.value
-                        val ltx = latest?.totalTxBytes ?: 0L
-                        val lrx = latest?.totalRxBytes ?: 0L
-                        Pair(ltx, lrx)
-                    } else Pair(ul, dl)
-
-                    points.add(
-                        NetworkTimelinePoint(
-                            timestamp = bStart,
-                            label = label,
-                            startTime = bStart,
-                            endTime = bEnd,
-                            uploadBytes = finalUl,
-                            downloadBytes = finalDl,
-                            mobileBytes = if (mob > 0) mob else (finalUl + finalDl),
-                            wifiBytes = wifi,
-                            allowedBytes = finalUl + finalDl,
-                            blockedBytes = 0L,
-                            activeApps = bucketFlows.map { it.appName }.distinct(),
-                            contactedDomains = bucketFlows.map { it.domain }.distinct()
-                        )
-                    )
-                }
+            // Hardware-level network stats from NetworkStatsManager for this exact 2-hour window
+            val (mobTx, mobRx) = try {
+                getUsageStatsUseCase.networkStatsHelper.queryDeviceSummary(
+                    ConnectivityManager.TYPE_MOBILE, bStart, bEnd
+                )
+            } catch (e: Exception) {
+                Pair(0L, 0L)
             }
 
-            DashboardTimeRange.DAYS_7 -> {
-                val cal = Calendar.getInstance()
-                val dayFormat = SimpleDateFormat("EEE", Locale.getDefault())
-                for (i in 6 downTo 0) {
-                    val dayCal = (cal.clone() as Calendar).apply {
-                        add(Calendar.DAY_OF_YEAR, -i)
-                        set(Calendar.HOUR_OF_DAY, 0)
-                        set(Calendar.MINUTE, 0)
-                        set(Calendar.SECOND, 0)
-                        set(Calendar.MILLISECOND, 0)
-                    }
-                    val bStart = dayCal.timeInMillis
-                    val bEnd = bStart + (24 * 60 * 60 * 1000L)
-                    val label = dayFormat.format(Date(bStart))
-
-                    val bucketFlows = allCachedFlows.filter { it.lastSeen in bStart until bEnd }
-                    val ul = bucketFlows.sumOf { it.uploadBytes }
-                    val dl = bucketFlows.sumOf { it.downloadBytes }
-
-                    val dailyEntity = _dailyUsage.value.find { it.timestamp in bStart until bEnd }
-                    val finalUl = if (ul > 0) ul else (dailyEntity?.totalTxBytes ?: 0L)
-                    val finalDl = if (dl > 0) dl else (dailyEntity?.totalRxBytes ?: 0L)
-                    val mob = dailyEntity?.totalMobileBytes ?: bucketFlows.filter { it.networkType == "MOBILE" }.sumOf { it.totalBytes }
-                    val wifi = dailyEntity?.totalWifiBytes ?: bucketFlows.filter { it.networkType == "WIFI" }.sumOf { it.totalBytes }
-
-                    points.add(
-                        NetworkTimelinePoint(
-                            timestamp = bStart,
-                            label = label,
-                            startTime = bStart,
-                            endTime = bEnd,
-                            uploadBytes = finalUl,
-                            downloadBytes = finalDl,
-                            mobileBytes = mob,
-                            wifiBytes = wifi,
-                            allowedBytes = finalUl + finalDl,
-                            blockedBytes = 0L,
-                            activeApps = bucketFlows.map { it.appName }.distinct(),
-                            contactedDomains = bucketFlows.map { it.domain }.distinct()
-                        )
-                    )
-                }
+            val (wifiTx, wifiRx) = try {
+                getUsageStatsUseCase.networkStatsHelper.queryDeviceSummary(
+                    ConnectivityManager.TYPE_WIFI, bStart, bEnd
+                )
+            } catch (e: Exception) {
+                Pair(0L, 0L)
             }
 
-            DashboardTimeRange.DAYS_30 -> {
-                val cal = Calendar.getInstance()
-                val dateFormat = SimpleDateFormat("d MMM", Locale.getDefault())
-                // 10 3-day intervals
-                for (i in 9 downTo 0) {
-                    val bucketCal = (cal.clone() as Calendar).apply {
-                        add(Calendar.DAY_OF_YEAR, -(i * 3))
-                        set(Calendar.HOUR_OF_DAY, 0)
-                        set(Calendar.MINUTE, 0)
-                        set(Calendar.SECOND, 0)
-                        set(Calendar.MILLISECOND, 0)
-                    }
-                    val bStart = bucketCal.timeInMillis
-                    val bEnd = bStart + (3L * 24 * 60 * 60 * 1000L)
-                    val label = dateFormat.format(Date(bStart))
+            val finalMob = maxOf(flowMob, mobTx + mobRx)
+            val finalWifi = maxOf(flowWifi, wifiTx + wifiRx)
+            val finalUl = maxOf(flowUl, mobTx + wifiTx)
+            val finalDl = maxOf(flowDl, mobRx + wifiRx)
 
-                    val bucketFlows = allCachedFlows.filter { it.lastSeen in bStart until bEnd }
-                    val ul = bucketFlows.sumOf { it.uploadBytes }
-                    val dl = bucketFlows.sumOf { it.downloadBytes }
+            val totalBase = finalUl + finalDl
+            val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val isCurrentSlot = isToday && (i == currentHour / 2)
 
-                    points.add(
-                        NetworkTimelinePoint(
-                            timestamp = bStart,
-                            label = label,
-                            startTime = bStart,
-                            endTime = bEnd,
-                            uploadBytes = ul,
-                            downloadBytes = dl,
-                            mobileBytes = bucketFlows.filter { it.networkType == "MOBILE" }.sumOf { it.totalBytes },
-                            wifiBytes = bucketFlows.filter { it.networkType == "WIFI" }.sumOf { it.totalBytes },
-                            allowedBytes = ul + dl,
-                            blockedBytes = 0L,
-                            activeApps = bucketFlows.map { it.appName }.distinct(),
-                            contactedDomains = bucketFlows.map { it.domain }.distinct()
-                        )
-                    )
-                }
-            }
+            val (adjustedUl, adjustedDl) = if (totalBase == 0L && isCurrentSlot) {
+                val latest = _latestUsage.value
+                val ltx = (latest?.totalMobileTx ?: 0L) + (latest?.totalWifiTx ?: 0L)
+                val lrx = (latest?.totalMobileRx ?: 0L) + (latest?.totalWifiRx ?: 0L)
+                Pair(ltx, lrx)
+            } else Pair(finalUl, finalDl)
 
-            DashboardTimeRange.CUSTOM -> {
-                val span = (customEndTime - customStartTime).coerceAtLeast(1000L)
-                val bucketCount = 7
-                val bucketSpan = span / bucketCount
-                val dateFormat = SimpleDateFormat("d MMM", Locale.getDefault())
+            val totalBytes = adjustedUl + adjustedDl
+            val adjustedMob = if (finalMob > 0) finalMob else if (finalWifi == 0L && totalBytes > 0) totalBytes else 0L
+            val adjustedWifi = if (finalWifi > 0) finalWifi else (totalBytes - adjustedMob).coerceAtLeast(0L)
 
-                for (i in 0 until bucketCount) {
-                    val bStart = customStartTime + (i * bucketSpan)
-                    val bEnd = bStart + bucketSpan
-                    val label = dateFormat.format(Date(bStart))
-
-                    val bucketFlows = allCachedFlows.filter { it.lastSeen in bStart until bEnd }
-                    val ul = bucketFlows.sumOf { it.uploadBytes }
-                    val dl = bucketFlows.sumOf { it.downloadBytes }
-
-                    points.add(
-                        NetworkTimelinePoint(
-                            timestamp = bStart,
-                            label = label,
-                            startTime = bStart,
-                            endTime = bEnd,
-                            uploadBytes = ul,
-                            downloadBytes = dl,
-                            mobileBytes = bucketFlows.filter { it.networkType == "MOBILE" }.sumOf { it.totalBytes },
-                            wifiBytes = bucketFlows.filter { it.networkType == "WIFI" }.sumOf { it.totalBytes },
-                            allowedBytes = ul + dl,
-                            blockedBytes = 0L,
-                            activeApps = bucketFlows.map { it.appName }.distinct(),
-                            contactedDomains = bucketFlows.map { it.domain }.distinct()
-                        )
-                    )
-                }
-            }
+            points.add(
+                NetworkTimelinePoint(
+                    timestamp = bStart,
+                    label = label,
+                    startTime = bStart,
+                    endTime = bEnd,
+                    uploadBytes = adjustedUl,
+                    downloadBytes = adjustedDl,
+                    mobileBytes = adjustedMob,
+                    wifiBytes = adjustedWifi,
+                    allowedBytes = totalBytes,
+                    blockedBytes = 0L,
+                    activeApps = bucketFlows.map { it.appName }.distinct(),
+                    contactedDomains = bucketFlows.map { it.domain }.distinct()
+                )
+            )
         }
 
         _timelinePoints.value = points
-        // Default select the last point if none selected yet
-        if (_selectedPoint.value == null && points.isNotEmpty()) {
-            selectIntervalPoint(points.last())
+
+        // Auto-select the active interval
+        val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val currentSlotIndex = (currentHour / 2).coerceIn(0, points.size - 1)
+        val targetPoint = if (isToday) {
+            points[currentSlotIndex]
+        } else {
+            points.lastOrNull { it.totalBytes > 0 } ?: points.firstOrNull()
+        }
+        if (targetPoint != null) {
+            selectIntervalPoint(targetPoint)
         }
     }
 
@@ -507,20 +459,38 @@ class DashboardViewModel(
                 )
             }
 
-            // Fallback: If interval flows are empty, populate active apps from top apps for user feedback
+            // Fallback: If interval flows are empty, check historical app records for that day or top apps
             val activeAppsList = if (appUsageMap.isNotEmpty()) {
                 appUsageMap.values.sortedByDescending { it.totalBytes }
             } else {
-                _topApps.value.take(4).map {
-                    AppIntervalUsage(
-                        appName = it.appName,
-                        packageName = it.packageName,
-                        uid = it.uid,
-                        uploadBytes = it.txBytes,
-                        downloadBytes = it.rxBytes,
-                        totalBytes = it.totalBytes,
-                        isBlocked = blockedUids.contains(it.uid)
-                    )
+                val epochDay = point.startTime / (24 * 60 * 60 * 1000L)
+                val dayRecords = repository.getAppRecordsForDay(epochDay).firstOrNull() ?: emptyList()
+                if (dayRecords.isNotEmpty()) {
+                    dayRecords.take(6).map {
+                        AppIntervalUsage(
+                            appName = it.appName,
+                            packageName = it.packageName,
+                            uid = it.uid,
+                            uploadBytes = it.mobileTxBytes + it.wifiTxBytes,
+                            downloadBytes = it.mobileRxBytes + it.wifiRxBytes,
+                            totalBytes = it.totalBytes,
+                            mobileBytes = it.totalMobileBytes,
+                            wifiBytes = it.totalWifiBytes,
+                            isBlocked = blockedUids.contains(it.uid)
+                        )
+                    }
+                } else {
+                    _topApps.value.take(4).map {
+                        AppIntervalUsage(
+                            appName = it.appName,
+                            packageName = it.packageName,
+                            uid = it.uid,
+                            uploadBytes = it.txBytes,
+                            downloadBytes = it.rxBytes,
+                            totalBytes = it.totalBytes,
+                            isBlocked = blockedUids.contains(it.uid)
+                        )
+                    }
                 }
             }
 

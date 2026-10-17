@@ -114,11 +114,20 @@ class FirewallEngine(
         return try {
             val normalizedTargetDomain = if (!domain.isNullOrBlank()) DomainNormalizer.normalize(domain) else null
 
+            // Resolve effective package name from parameters, UID lookup, or domain heuristic
+            val effectivePackage = if (!packageName.isNullOrBlank()) {
+                packageName
+            } else if (uid > 0 && blockedRulesByUid.containsKey(uid)) {
+                blockedRulesByUid[uid]?.packageName
+            } else if (normalizedTargetDomain != null) {
+                inferPackageForDomain(normalizedTargetDomain)
+            } else null
+
             // 1. Check APP + DOMAIN rules if domain & package are provided
-            if (normalizedTargetDomain != null && !packageName.isNullOrBlank()) {
+            if (normalizedTargetDomain != null && !effectivePackage.isNullOrBlank()) {
                 val matchingAppDomainRule = activeDomainRules.firstOrNull { rule ->
                     (rule.ruleType == RuleType.APP_BLOCK.name || rule.ruleType == RuleType.APP_ALLOW.name) &&
-                            rule.packageName.equals(packageName, ignoreCase = true) &&
+                            rule.packageName.equals(effectivePackage, ignoreCase = true) &&
                             isNetworkScopeMatching(rule.networkScope, networkType) &&
                             DomainNormalizer.matches(normalizedTargetDomain, rule.domainPattern)
                 }
@@ -128,17 +137,17 @@ class FirewallEngine(
                         return FirewallEvaluationResult(
                             decision = FirewallDecision.ALLOW,
                             uid = uid,
-                            packageName = packageName,
+                            packageName = effectivePackage,
                             matchedDomain = normalizedTargetDomain,
                             reason = "App allow rule for ${matchingAppDomainRule.domainPattern}"
                         )
                     } else {
-                        val reason = "App domain block rule: ${matchingAppDomainRule.domainPattern} (${packageName})"
-                        recordBlockEvent(uid, packageName, matchingAppDomainRule.appName ?: packageName, reason, networkType)
+                        val reason = "App domain block rule: ${matchingAppDomainRule.domainPattern} (${effectivePackage})"
+                        recordBlockEvent(uid, effectivePackage, matchingAppDomainRule.appName ?: effectivePackage, reason, networkType)
                         return FirewallEvaluationResult(
                             decision = FirewallDecision.BLOCK,
                             uid = uid,
-                            packageName = packageName,
+                            packageName = effectivePackage,
                             matchedDomain = normalizedTargetDomain,
                             reason = reason
                         )
@@ -159,17 +168,17 @@ class FirewallEngine(
                         return FirewallEvaluationResult(
                             decision = FirewallDecision.ALLOW,
                             uid = uid,
-                            packageName = packageName,
+                            packageName = effectivePackage,
                             matchedDomain = normalizedTargetDomain,
                             reason = "Global domain allow rule: ${matchingGlobalDomainRule.domainPattern}"
                         )
                     } else {
                         val reason = "Global domain block rule: ${matchingGlobalDomainRule.domainPattern}"
-                        recordBlockEvent(uid, packageName ?: "all", "All Apps", reason, networkType)
+                        recordBlockEvent(uid, effectivePackage ?: "all", "All Apps", reason, networkType)
                         return FirewallEvaluationResult(
                             decision = FirewallDecision.BLOCK,
                             uid = uid,
-                            packageName = packageName,
+                            packageName = effectivePackage,
                             matchedDomain = normalizedTargetDomain,
                             reason = reason
                         )
@@ -177,15 +186,15 @@ class FirewallEngine(
                 }
             }
 
-            // 3. Check APP RULE (Package / UID)
+            // 3. Check APP RULE (Package / UID) with Network Scope evaluation
             if (uid > 0) {
                 val uidResult = evaluateUid(uid, networkType)
                 if (uidResult.decision == FirewallDecision.BLOCK) {
                     return uidResult.copy(matchedDomain = normalizedTargetDomain)
                 }
             }
-            if (!packageName.isNullOrBlank()) {
-                val pkgResult = evaluatePackage(packageName, networkType)
+            if (!effectivePackage.isNullOrBlank()) {
+                val pkgResult = evaluatePackage(effectivePackage, networkType)
                 if (pkgResult.decision == FirewallDecision.BLOCK) {
                     return pkgResult.copy(matchedDomain = normalizedTargetDomain)
                 }
@@ -412,8 +421,46 @@ class FirewallEngine(
         activeDomainRules.removeIf { it.id == ruleId }
     }
 
-    fun getBlockedPackages(): Set<String> {
-        return blockedPackages.toSet()
+    fun getBlockedPackages(networkType: NetworkInterfaceType = NetworkInterfaceType.ANY): Set<String> {
+        if (networkType == NetworkInterfaceType.ANY) {
+            return blockedPackages.toSet()
+        }
+        return blockedRulesByPackage.values
+            .filter { rule ->
+                when (networkType) {
+                    NetworkInterfaceType.MOBILE -> rule.blockMobile
+                    NetworkInterfaceType.WIFI -> rule.blockWifi
+                    NetworkInterfaceType.ANY -> rule.blockMobile || rule.blockWifi
+                }
+            }
+            .map { it.packageName }
+            .toSet()
+    }
+
+    /**
+     * Associates prominent internet services and known domains with package names.
+     */
+    fun inferPackageForDomain(domain: String): String? {
+        val lower = domain.lowercase()
+        return when {
+            lower.contains("whatsapp") -> "com.whatsapp"
+            lower.contains("instagram") || lower.contains("cdninstagram") -> "com.instagram.android"
+            lower.contains("facebook") || lower.contains("fbcdn") -> "com.facebook.katana"
+            lower.contains("youtube") || lower.contains("googlevideo") -> "com.google.android.youtube"
+            lower.contains("netflix") || lower.contains("nflxvideo") -> "com.netflix.mediaclient"
+            lower.contains("spotify") || lower.contains("scdn.co") -> "com.spotify.music"
+            lower.contains("twitter") || lower.contains("x.com") || lower.contains("twimg") -> "com.twitter.android"
+            lower.contains("telegram") || lower.contains("t.me") -> "org.telegram.messenger"
+            lower.contains("tiktok") || lower.contains("byteoversea") -> "com.zhiliaoapp.musically"
+            lower.contains("snapchat") -> "com.snapchat.android"
+            lower.contains("reddit") || lower.contains("redd.it") -> "com.reddit.frontpage"
+            else -> {
+                blockedRulesByPackage.keys.firstOrNull { pkg ->
+                    val mainSegment = pkg.split(".").lastOrNull { it.length > 3 }
+                    mainSegment != null && lower.contains(mainSegment)
+                }
+            }
+        }
     }
 
     fun getBlockedUids(): Set<Int> {

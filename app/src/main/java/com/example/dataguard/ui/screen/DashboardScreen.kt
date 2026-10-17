@@ -124,7 +124,7 @@ fun DashboardScreen(
     val selectedPoint by viewModel.selectedPoint.collectAsState()
     val selectedIntervalDetails by viewModel.selectedIntervalDetails.collectAsState()
     val selectedFilter by viewModel.selectedFilter.collectAsState()
-    val selectedTimeRange by viewModel.selectedTimeRange.collectAsState()
+    val selectedDayMillis by viewModel.selectedDateMillis.collectAsState()
 
     // Detail Dialogs State
     val selectedAppForDetail by viewModel.selectedAppForDetail.collectAsState()
@@ -529,19 +529,20 @@ fun DashboardScreen(
             }
         }
 
-        // Timeline Graph (Upload, Download, Total, Filters, Time Ranges, and Interval Tapping Inspector)
+        // Timeline Graph (Upload, Download, Total, Dropdown Selection, Date Navigation, and Interval Tapping Inspector)
         NetworkTimelineGraph(
             points = timelinePoints,
             selectedPoint = selectedPoint,
             selectedIntervalDetails = selectedIntervalDetails,
             selectedFilter = selectedFilter,
-            selectedTimeRange = selectedTimeRange,
+            selectedDayMillis = selectedDayMillis,
             onSelectFilter = { viewModel.setGraphFilter(it) },
-            onSelectTimeRange = { viewModel.setTimeRange(it) },
+            onPreviousDay = { viewModel.goToPreviousDay() },
+            onNextDay = { viewModel.goToNextDay() },
+            onSelectDay = { viewModel.setSelectedDate(it) },
             onIntervalTapped = { viewModel.selectIntervalPoint(it) },
             onAppTapped = { pkg, uid -> viewModel.openAppDetailByPackage(pkg, uid) },
-            onDomainTapped = { domain -> viewModel.openDomainDetail(domain) },
-            onOpenCustomDateDialog = { showCustomDateDialog = true }
+            onDomainTapped = { domain -> viewModel.openDomainDetail(domain) }
         )
 
         // 6. Top Applications Section

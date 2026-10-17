@@ -1,80 +1,103 @@
-# Implementation Plan: Comprehensive System App Recognition & Filter Toggle
+# Fix VPN & Firewall App Blocking, Package Attribution, and SNI Enforcement
 
-This plan addresses the issue where system apps were shown as vague `System UID ($uid)` placeholders rather than their true package names. It implements multi-tier resolution using `PackageManager.getInstalledPackages`, `getNameForUid`, and deterministic AOSP system service mappings to display exact package identifiers (e.g. `com.android.phone`, `android.uid.system`), while adding a dedicated filter toggle to show or hide system apps.
+This plan diagnoses and fixes the core flaws in DataGuard's local VPN firewall where blocked applications were inadvertently bypassing the VPN via `addDisallowedApplication()`, DNS checks passed `packageName = null`, and TLS/SNI inspection evaluated rules without enforcing the block decision.
 
----
+## User Review & Critical Decisions
 
-## 1. Problem Analysis & Root Cause
-
-1. **Vague Fallback in `NetworkStatsHelper.kt`**:
-   - `getAppInfoForUid(uid)` currently falls back to `Pair("uid.$uid", "System UID ($uid)")` whenever `packageManager.getPackagesForUid(uid)` returns null or empty.
-   - On Android 11+ (API 30+), many shared system UIDs (e.g. UID 1001 for Phone, UID 1013 for Media, UID 1073 for NetworkStack, UID 0 for Kernel, UID -5 for Tethering) do not return a single simple package through `getPackagesForUid(uid)`.
-   - As a result, critical system applications and services appear in the list with the confusing title `System UID (1001)` or `System UID (1073)`.
-
-2. **User Preferences**:
-   - **Naming**: Use exact package identifiers (e.g. `com.android.phone`, `android.uid.system`, `com.android.networkstack`).
-   - **Styling**: Standard card display without separate visual badges or differences from user apps.
-   - **Filtering**: Add a filter toggle in the Apps view to easily show or hide system apps.
+> [!IMPORTANT]
+> The following architectural decisions were confirmed:
+> - **VPN Interception**: Route blocked applications into the local VPN sinkhole using `addAllowedApplication()` and `0.0.0.0/0` routing, while letting non-blocked applications connect directly to the internet at native speeds.
+> - **Dynamic Interface Enforcement**: Dynamically determine whether the active connection is Mobile Data or Wi-Fi, and enforce app restrictions according to `blockMobile` and `blockWifi` policies.
+> - **Enforcement Response**: Immediately drop blocked packets and synthesize standard DNS `NXDOMAIN` responses for blocked domains/apps, recording `BlockedTrafficEventEntity` logs for user alerts.
 
 ---
 
-## 2. Proposed Changes
+## 1. Root Cause Diagnosis
 
-### A. Data Layer (`AppDataUsage.kt` / `UsageEntity.kt`)
-- Add `val isSystemApp: Boolean = false` to `AppDataUsage`.
-- Mark an app as a system app if:
-  - `uid < android.os.Process.FIRST_APPLICATION_UID` (UID < 10000), OR
-  - Its package name starts with `android.`, `com.android.`, or system flags.
-
-### B. Domain / Telemetry Layer (`NetworkStatsHelper.kt`)
-- Implement multi-tier system app & UID resolution in `getAppInfoForUid(uid)`:
-  1. **Pre-cached Package Lookup**: Inspect all installed packages from `packageManager.getInstalledPackages(MATCH_UNINSTALLED_PACKAGES or MATCH_DISABLED_COMPONENTS)` matching `uid`. If found, select the exact package identifier (e.g. `com.android.phone`, `com.android.providers.telephony`).
-  2. **System Name Lookup**: Query `packageManager.getNameForUid(uid)`. If a named system service is returned (e.g. `android.uid.phone`, `audioserver`, `cameraserver`), resolve to the exact package/service identifier.
-  3. **AOSP Known System UIDs Mapping**:
-     - `0`: `Pair("android.kernel", "android.kernel")` (Kernel & Root Services)
-     - `1000`: `Pair("android.uid.system", "android.uid.system")` (Android System Server)
-     - `1001`: `Pair("com.android.phone", "com.android.phone")` (Telephony & Cellular Services)
-     - `1002`: `Pair("com.android.bluetooth", "com.android.bluetooth")` (Bluetooth Stack)
-     - `1013`: `Pair("android.media", "android.media")` (MediaServer & Audio Services)
-     - `1014`: `Pair("android.drm", "android.drm")` (DRM Services)
-     - `1020`: `Pair("android.net.mdns", "android.net.mdns")` (Multicast DNS)
-     - `1021`: `Pair("android.location", "android.location")` (Location & GPS Provider)
-     - `1068`: `Pair("android.net.dns", "android.net.dns")` (DNS & Netd Resolver)
-     - `1073`: `Pair("com.android.networkstack", "com.android.networkstack")` (Network Stack)
-     - `1074`: `Pair("com.android.captiveportallogin", "com.android.captiveportallogin")` (Captive Portal)
-     - `-4`: `Pair("android.uid.removed", "android.uid.removed")` (Removed/Uninstalled Apps)
-     - `-5`: `Pair("android.uid.tethering", "android.uid.tethering")` (Hotspot & Tethering)
-  4. **Never Fall Back to Generic String**: For any unknown UID, format as `android.process.$uid` or `android.service.$uid` using the exact identifier.
-
-### C. ViewModel Layer (`AppsViewModel.kt`)
-- Add `_showSystemApps = MutableStateFlow(true)` and public `showSystemApps: StateFlow<Boolean>`.
-- Add `fun toggleShowSystemApps()` to toggle between showing and hiding system apps.
-
-### D. UI Layer (`AppsScreen.kt`)
-- Add a FilterChip in the filter controls row:
-  - Toggle between **"System Apps: Shown"** and **"System Apps: Hidden"**.
-  - Accessible testTag: `Modifier.testTag("toggle_system_apps")`.
-- Update `filteredApps`:
-  - When `showSystemApps` is false, exclude all apps where `isSystemApp == true`.
-  - Maintain active data filtering (`totalBytes > 0L`) and search query matching.
-- App cards maintain standard presentation without special badges, showing the exact package identifier.
+1. **`addDisallowedApplication()` VPN Bypass Flaw**:
+   - In `DataGuardVpnService.kt`, blocked apps were added to the VPN builder using `builder.addDisallowedApplication(pkg)`.
+   - In Android's `VpnService` API, `addDisallowedApplication()` explicitly **excludes** that app from the VPN tunnel, causing Android to route its traffic directly through the default physical network interface (cellular data or Wi-Fi). As a result, blocked apps were granted unrestricted internet access.
+2. **Missing Package & UID Attribution in DNS Queries**:
+   - In `PacketProcessor.kt`, DNS queries arriving on UDP port 53 called `firewallEngine.evaluateConnection(domain = dnsDomain, packageName = null, networkType = NetworkInterfaceType.ANY)`.
+   - Because `packageName` and `uid` were null, app-specific domain block/allow rules (`RuleType.APP_BLOCK` / `APP_ALLOW`) and app-level blocks never matched.
+3. **Ignored Block Decision in TLS/SNI Inspection**:
+   - In `PacketProcessor.kt` line 315, TLS ClientHello SNI extraction evaluated `firewallEngine.evaluateConnection()`, but the result was discarded. No action was taken to drop or reject the packet.
+4. **VpnService Route Scope**:
+   - The VPN builder only routed `10.1.10.2/32` (DNS) and `10.1.10.0/24`, which failed to capture standard TCP/UDP traffic from blocked applications.
 
 ---
 
-## 3. Verification Plan
+## 2. Technical Architecture & Component Flow
 
-### Automated Verification
-- Run compilation checks:
-  ```bash
-  compile_applet
-  ```
-- Run local unit tests:
-  ```bash
-  gradle :app:testDebugUnitTest
-  ```
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        DataGuard Local Firewall                        │
+├────────────────────────────────────────────────────────────────────────┤
+│ 1. Rule Configuration (DataGuardVpnService):                           │
+│    - Query active blocked apps filtered by current network (Cell/WiFi) │
+│    - If blocked apps exist:                                            │
+│        builder.addAllowedApplication(pkg) for each blocked app         │
+│        builder.addRoute("0.0.0.0", 0) -> Sinks all blocked traffic     │
+│    - All non-blocked apps bypass VPN (native zero-latency performance) │
+├────────────────────────────────────────────────────────────────────────┤
+│ 2. Packet Processing & Sinkholing (PacketProcessor):                   │
+│    - Traffic from blocked apps enters TUN interface                   │
+│    - Non-DNS packets: DROPPED immediately (sinkholed)                  │
+│    - DNS queries (UDP 53):                                             │
+│        Resolve caller UID/Package via ConnectionOwnerUid or Heuristics │
+│        Evaluate firewall rule (Domain + App + NetworkType)             │
+│        If Blocked: Synthesize NXDOMAIN response + Log Block Event      │
+│        If Allowed: Forward upstream via protected socket               │
+│    - TLS SNI (TCP 443):                                                │
+│        Extract SNI hostname                                            │
+│        Evaluate rule -> If BLOCK: DROP packet + Log Block Event        │
+├────────────────────────────────────────────────────────────────────────┤
+│ 3. Rule Synchronization (FirewallEngine & VpnSessionManager):          │
+│    - User toggles app block -> Room DB updates                         │
+│    - ACTION_RELOAD_RULES triggers seamless tunnel update               │
+│    - Network callback updates rules on Wi-Fi <-> Cellular transition   │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-### Manual / Visual Verification
-- Open the Apps tab.
-- Verify that system processes display exact package names like `com.android.phone`, `android.uid.system`, `com.android.networkstack`, and `android.media` rather than `System UID (1001)`.
-- Click the "System Apps" filter toggle to confirm system apps can be hidden or revealed instantly without jumping scroll positions.
-- Verify search by package identifier or name works reliably.
+---
+
+## 3. Step-by-Step Implementation Changes
+
+### 1. `DataGuardVpnService.kt`: Correct Routing & Sinkhole Construction
+- Replace `builder.addDisallowedApplication(pkg)` with `builder.addAllowedApplication(pkg)`.
+- Query active blocked apps from `FirewallEngine` filtered by the current network interface (Mobile Data vs Wi-Fi).
+- When blocked apps exist:
+  - Add `builder.addAllowedApplication(pkg)` for each target package.
+  - Add default route `builder.addRoute("0.0.0.0", 0)` to capture all traffic from those blocked apps into the TUN interface.
+  - Exclude DataGuard's own package from blocking.
+- When DNS/Domain filtering is enabled across all apps, configure appropriate fallback routes so global domain rules continue to function.
+- Register a `ConnectivityManager.NetworkCallback` to reload firewall rules automatically when switching between Wi-Fi and Mobile Data.
+
+### 2. `PacketProcessor.kt`: Caller Attribution & Strict Drop Enforcement
+- Add caller resolution helper using `ConnectivityManager.getConnectionOwnerUid()` (API 29+) with fallback to port-mapping and domain-heuristics.
+- In `handleUdpPacket()`:
+  - Pass resolved `packageName` and `uid` into `firewallEngine.evaluateConnection()`.
+  - Also check if the queried domain belongs to any application currently blocked on the active network interface.
+  - If decision is `BLOCK`: return synthesized `NXDOMAIN` (or sinkhole response), drop packet, and call `recordBlockEvent()`.
+- In `inspectTransportPayload()`:
+  - When evaluating TLS SNI on port 443, inspect `val eval = firewallEngine.evaluateConnection(...)`.
+  - If `eval.decision == FirewallDecision.BLOCK`:
+    - Drop the packet immediately (do not forward).
+    - Record blocked event and log detection.
+  - For all packets arriving from sinkholed apps on the TUN interface: drop and discard them so the blocked app receives no network response.
+
+### 3. `FirewallEngine.kt`: Network-Aware Evaluation & App-Domain Matching
+- Ensure `evaluateConnection()` resolves app blocks accurately when a domain is strongly affiliated with a blocked package (e.g., `whatsapp.net` for `com.whatsapp`).
+- Ensure `isNetworkScopeMatching()` accurately compares `MOBILE` vs `WIFI` against the current network interface state.
+
+---
+
+## 4. Verification Plan
+
+- **Compilation**: Run `compile_applet` to verify clean compilation.
+- **Unit Tests**: Run `gradle :app:testDebugUnitTest` to verify repository, firewall engine, and packet parser tests pass.
+- **Functional Checks**:
+  - Verify that blocking an app routes it via `addAllowedApplication()` into the sinkhole TUN interface.
+  - Verify that unblocked apps are not added to `addAllowedApplication()`, thus bypassing the VPN.
+  - Verify that mobile data restrictions apply when on cellular and lift when connected to Wi-Fi.
+  - Verify that TLS/SNI block decisions actually drop packets and log `BlockedTrafficEventEntity`.

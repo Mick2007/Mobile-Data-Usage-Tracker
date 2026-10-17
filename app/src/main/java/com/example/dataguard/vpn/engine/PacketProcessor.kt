@@ -1,7 +1,11 @@
 package com.example.dataguard.vpn.engine
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.util.Log
 import com.example.dataguard.data.entity.AttributionConfidence
 import kotlinx.coroutines.CoroutineScope
@@ -14,6 +18,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
 /**
@@ -130,9 +135,62 @@ class PacketProcessor(
     }
 
     /**
+     * Resolves caller UID and package name for an active socket connection.
+     */
+    fun resolveCaller(
+        protocol: Int,
+        srcIp: String,
+        srcPort: Int,
+        dstIp: String,
+        dstPort: Int
+    ): Pair<Int, String?> {
+        val ctx = context ?: return Pair(-1, null)
+        var resolvedUid = -1
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                if (cm != null) {
+                    val ipProto = if (protocol == 6) OsConstants.IPPROTO_TCP else OsConstants.IPPROTO_UDP
+                    val localAddress = InetSocketAddress(InetAddress.getByName(srcIp), srcPort)
+                    val remoteAddress = InetSocketAddress(InetAddress.getByName(dstIp), dstPort)
+                    resolvedUid = cm.getConnectionOwnerUid(ipProto, localAddress, remoteAddress)
+                }
+            } catch (_: Exception) {
+                // System limitation or connection fallback
+            }
+        }
+
+        var resolvedPkg: String? = null
+        if (resolvedUid > 0) {
+            try {
+                val packages = ctx.packageManager.getPackagesForUid(resolvedUid)
+                if (!packages.isNullOrEmpty()) {
+                    resolvedPkg = packages[0]
+                }
+            } catch (_: Exception) {}
+        }
+
+        return Pair(resolvedUid, resolvedPkg)
+    }
+
+    private fun getCurrentNetworkType(): NetworkInterfaceType {
+        val ctx = context ?: return NetworkInterfaceType.ANY
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return NetworkInterfaceType.ANY
+        val activeNetwork = cm.activeNetwork ?: return NetworkInterfaceType.ANY
+        val caps = cm.getNetworkCapabilities(activeNetwork) ?: return NetworkInterfaceType.ANY
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkInterfaceType.WIFI
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkInterfaceType.MOBILE
+            else -> NetworkInterfaceType.ANY
+        }
+    }
+
+    /**
      * Handles incoming UDP packets on the TUN interface.
-     * Intercepts DNS queries on port 53, evaluates firewall rules, and either
-     * returns an immediate NXDOMAIN/Sinkhole or forwards upstream to System Default DNS.
+     * Intercepts DNS queries on port 53, evaluates firewall rules with package attribution,
+     * and either returns an immediate NXDOMAIN/Sinkhole or forwards upstream to System Default DNS.
      */
     private fun handleUdpPacket(
         buffer: ByteBuffer,
@@ -149,6 +207,9 @@ class PacketProcessor(
         val udpLen = buffer.short.toInt() and 0xFFFF
         val udpChecksum = buffer.short
 
+        val (callerUid, callerPkg) = resolveCaller(17, ipMeta.sourceAddress, srcPort, ipMeta.destinationAddress, dstPort)
+        val currentNetworkType = getCurrentNetworkType()
+
         // Check if this is a DNS query (destined to port 53 or to virtual DNS IP)
         if (dstPort == SystemDnsResolver.DNS_PORT && buffer.hasRemaining()) {
             val payloadLen = buffer.remaining()
@@ -159,12 +220,13 @@ class PacketProcessor(
             if (dnsDomain != null) {
                 val eval = firewallEngine.evaluateConnection(
                     domain = dnsDomain,
-                    packageName = null,
-                    networkType = NetworkInterfaceType.ANY
+                    packageName = callerPkg,
+                    uid = callerUid,
+                    networkType = currentNetworkType
                 )
 
                 if (eval.decision == FirewallDecision.BLOCK) {
-                    // Synthesize immediate NXDOMAIN response for blocked domain
+                    // Synthesize immediate NXDOMAIN response for blocked domain or blocked app
                     val nxDomainResponse = SystemDnsResolver.buildDnsNxDomainResponse(queryBytes)
                         ?: SystemDnsResolver.buildDnsSinkholeResponse(queryBytes)
                     if (nxDomainResponse != null) {
@@ -203,6 +265,16 @@ class PacketProcessor(
             }
         }
 
+        // Check if caller application is blocked on current network interface
+        if (callerUid > 0 && firewallEngine.evaluateUid(callerUid, currentNetworkType).decision == FirewallDecision.BLOCK) {
+            Log.d(TAG, "Dropped UDP packet from blocked UID $callerUid")
+            return
+        }
+        if (!callerPkg.isNullOrBlank() && firewallEngine.evaluatePackage(callerPkg, currentNetworkType).decision == FirewallDecision.BLOCK) {
+            Log.d(TAG, "Dropped UDP packet from blocked package $callerPkg")
+            return
+        }
+
         // Other generic UDP traffic
         flowTracker?.recordObservation(
             RawFlowObservation(
@@ -211,7 +283,8 @@ class PacketProcessor(
                 protocol = "UDP",
                 uploadBytes = totalBytes.toLong(),
                 downloadBytes = 0L,
-                networkType = "ANY"
+                networkType = currentNetworkType.name,
+                uid = callerUid
             ),
             forcedConfidence = AttributionConfidence.LOW
         )
@@ -307,16 +380,36 @@ class PacketProcessor(
                         val dataOffsetAndFlags = buffer.short.toInt() and 0xFFFF
                         val tcpHeaderLen = ((dataOffsetAndFlags shr 12) and 0x0F) * 4
 
+                        val (callerUid, callerPkg) = resolveCaller(6, ipMeta.sourceAddress, srcPort, ipMeta.destinationAddress, dstPort)
+                        val currentNetworkType = getCurrentNetworkType()
+
+                        // Check if application is blocked on current network interface
+                        if (callerUid > 0 && firewallEngine.evaluateUid(callerUid, currentNetworkType).decision == FirewallDecision.BLOCK) {
+                            Log.d(TAG, "Dropped TCP packet from blocked UID $callerUid")
+                            return
+                        }
+                        if (!callerPkg.isNullOrBlank() && firewallEngine.evaluatePackage(callerPkg, currentNetworkType).decision == FirewallDecision.BLOCK) {
+                            Log.d(TAG, "Dropped TCP packet from blocked package $callerPkg")
+                            return
+                        }
+
                         if (tcpHeaderLen in 20..buffer.remaining()) {
                             buffer.position(ipHeaderLen + tcpHeaderLen)
                             if (dstPort == 443 && buffer.hasRemaining()) {
                                 val sni = TlsSniParser.extractSniHostname(buffer)
                                 if (sni != null) {
-                                    firewallEngine.evaluateConnection(
+                                    val eval = firewallEngine.evaluateConnection(
                                         domain = sni,
-                                        packageName = null,
-                                        networkType = NetworkInterfaceType.ANY
+                                        packageName = callerPkg,
+                                        uid = callerUid,
+                                        networkType = currentNetworkType
                                     )
+                                    if (eval.decision == FirewallDecision.BLOCK) {
+                                        // STRICT ENFORCEMENT: Drop TLS/HTTPS connection immediately!
+                                        Log.i(TAG, "Dropped TLS packet matching blocked rule for $sni (caller: $callerPkg, reason: ${eval.reason})")
+                                        return
+                                    }
+
                                     tracker.registerIpDomainMapping(ipMeta.destinationAddress, sni)
                                     tracker.recordObservation(
                                         RawFlowObservation(
@@ -325,7 +418,8 @@ class PacketProcessor(
                                             protocol = "TLS/HTTPS",
                                             uploadBytes = totalBytes,
                                             downloadBytes = 0L,
-                                            networkType = "ANY"
+                                            networkType = currentNetworkType.name,
+                                            uid = callerUid
                                         ),
                                         forcedConfidence = AttributionConfidence.HIGH
                                     )
@@ -340,7 +434,8 @@ class PacketProcessor(
                                     protocol = "TCP",
                                     uploadBytes = totalBytes,
                                     downloadBytes = 0L,
-                                    networkType = "ANY"
+                                    networkType = currentNetworkType.name,
+                                    uid = callerUid
                                 ),
                                 forcedConfidence = AttributionConfidence.LOW
                             )
