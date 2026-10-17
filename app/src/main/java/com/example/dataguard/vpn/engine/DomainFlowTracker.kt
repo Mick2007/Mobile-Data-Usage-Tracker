@@ -2,7 +2,6 @@ package com.example.dataguard.vpn.engine
 
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import android.util.Log
 import com.example.dataguard.data.entity.AttributionConfidence
 import com.example.dataguard.data.entity.NetworkFlowEntity
@@ -16,7 +15,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.net.InetAddress
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 data class RawFlowObservation(
@@ -30,6 +29,11 @@ data class RawFlowObservation(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class DomainMappingEntry(
+    val domain: String,
+    val expireTimestamp: Long
+)
+
 class DomainFlowTracker(
     private val context: Context,
     private val repository: DataRepository?,
@@ -37,8 +41,8 @@ class DomainFlowTracker(
 ) {
     private val packageManager: PackageManager = context.packageManager
 
-    // Cache of IP -> Observed Domain (from DNS query or SNI) with TTL
-    private val ipToDomainMap = ConcurrentHashMap<String, Pair<String, Long>>() // IP -> (domain, expireTimestamp)
+    // Cache of IP -> Set of Observed Domains (supports multiple domains on shared CDN IPs) with DNS TTL
+    private val ipToDomainMap = ConcurrentHashMap<String, MutableSet<DomainMappingEntry>>()
 
     // Flow key -> In-memory delta aggregation
     private data class FlowDelta(
@@ -98,11 +102,46 @@ class DomainFlowTracker(
     }
 
     /**
-     * Maps an IP address to a known domain (e.g. from DNS responses or reverse lookups).
+     * Maps an IP address to a known domain honoring authoritative DNS TTL (in seconds).
+     * Multi-domain set per IP prevents "last writer wins" corruption on shared CDN IPs.
      */
-    fun registerIpDomainMapping(ip: String, domain: String, ttlMillis: Long = 300_000L) {
-        if (ip.isNotEmpty() && domain.isNotEmpty()) {
-            ipToDomainMap[ip] = Pair(domain.trim().lowercase(), System.currentTimeMillis() + ttlMillis)
+    fun registerIpDomainMapping(ip: String, domain: String, ttlSeconds: Long = 300L) {
+        if (ip.isBlank() || domain.isBlank()) return
+        val cleanDomain = domain.trim().lowercase()
+        val ttlMillis = ttlSeconds.coerceIn(30L, 86400L) * 1000L
+        val expireTime = System.currentTimeMillis() + ttlMillis
+        val entry = DomainMappingEntry(cleanDomain, expireTime)
+
+        ipToDomainMap.compute(ip) { _, existingSet ->
+            val set = existingSet ?: Collections.synchronizedSet(mutableSetOf<DomainMappingEntry>())
+            // Remove previous entry for the exact same domain if present to update TTL
+            set.removeIf { it.domain == cleanDomain }
+            set.add(entry)
+            set
+        }
+    }
+
+    /**
+     * Returns all active, unexpired domains associated with an IP.
+     */
+    fun getDomainsForIp(ip: String): Set<String> {
+        val now = System.currentTimeMillis()
+        val entries = ipToDomainMap[ip] ?: return emptySet()
+        synchronized(entries) {
+            return entries.filter { it.expireTimestamp > now }.map { it.domain }.toSet()
+        }
+    }
+
+    /**
+     * Returns the primary (most recently updated active) domain for an IP, or null.
+     */
+    fun getPrimaryDomainForIp(ip: String): String? {
+        val now = System.currentTimeMillis()
+        val entries = ipToDomainMap[ip] ?: return null
+        synchronized(entries) {
+            return entries.filter { it.expireTimestamp > now }
+                .maxByOrNull { it.expireTimestamp }
+                ?.domain
         }
     }
 
@@ -118,16 +157,13 @@ class DomainFlowTracker(
                 !observation.domain.isNullOrBlank() -> {
                     Pair(observation.domain.trim().lowercase(), forcedConfidence ?: AttributionConfidence.HIGH)
                 }
-                ipToDomainMap.containsKey(destIp) -> {
-                    val mapped = ipToDomainMap[destIp]
-                    if (mapped != null && mapped.second > System.currentTimeMillis()) {
-                        Pair(mapped.first, forcedConfidence ?: AttributionConfidence.MEDIUM)
+                destIp.isNotEmpty() && destIp != "unknown" -> {
+                    val primaryDomain = getPrimaryDomainForIp(destIp)
+                    if (primaryDomain != null) {
+                        Pair(primaryDomain, forcedConfidence ?: AttributionConfidence.MEDIUM)
                     } else {
                         Pair("Unknown / IP-only ($destIp)", AttributionConfidence.LOW)
                     }
-                }
-                destIp.isNotEmpty() && destIp != "unknown" -> {
-                    Pair("Unknown / IP-only ($destIp)", AttributionConfidence.LOW)
                 }
                 else -> {
                     Pair("Unknown / Unattributed traffic", AttributionConfidence.UNKNOWN)
@@ -135,15 +171,22 @@ class DomainFlowTracker(
             }
 
             // Cache mapping if domain was detected
-            if (!observation.domain.isNullOrBlank() && destIp.isNotEmpty() && destIp != "unknown") {
+            if (!observation.domain.isNullOrBlank() && destIp.isNotEmpty() && destIp != "unknown" && destIp != "DNS-Query") {
                 registerIpDomainMapping(destIp, observation.domain)
             }
 
-            // 2. Attribute Application / Package Name
-            val (pkgName, appName) = resolveAppInfo(observation.uid, resolvedDomain)
+            // 2. Strict Application Attribution (Consolidated AppDomainMatcher)
+            val attribution = AppDomainMatcher.resolveAppInfo(packageManager, observation.uid, resolvedDomain)
+            val finalConfidence = forcedConfidence ?: if (attribution.isVerifiedUid) {
+                AttributionConfidence.HIGH
+            } else if (confidence == AttributionConfidence.HIGH) {
+                AttributionConfidence.HIGH
+            } else {
+                attribution.confidence
+            }
 
             // 3. Compose aggregation flow key
-            val flowKey = "$resolvedDomain::$pkgName::${observation.protocol}::${observation.networkType}"
+            val flowKey = "$resolvedDomain::${attribution.packageName}::${observation.protocol}::${observation.networkType}"
 
             val delta = FlowDelta(
                 domain = resolvedDomain,
@@ -151,11 +194,11 @@ class DomainFlowTracker(
                 protocol = observation.protocol,
                 networkType = observation.networkType,
                 uid = observation.uid,
-                packageName = pkgName,
-                appName = appName,
+                packageName = attribution.packageName,
+                appName = attribution.appName,
                 uploadDelta = observation.uploadBytes,
                 downloadDelta = observation.downloadBytes,
-                confidence = confidence,
+                confidence = finalConfidence,
                 timestamp = observation.timestamp
             )
 
@@ -177,58 +220,17 @@ class DomainFlowTracker(
     }
 
     /**
-     * Resolves Application UID / package name with heuristics for known services.
+     * Atomically flushes pending deltas to Room repository without dropping observations.
+     * Uses atomic per-key removal instead of copy-then-clear to ensure zero lost updates.
      */
-    private fun resolveAppInfo(uid: Int, domain: String): Pair<String, String> {
-        if (uid > 0) {
-            val packages = try {
-                packageManager.getPackagesForUid(uid)
-            } catch (_: Exception) {
-                null
-            }
-
-            if (!packages.isNullOrEmpty()) {
-                val pkg = packages[0]
-                val appName = try {
-                    val info = packageManager.getApplicationInfo(pkg, 0)
-                    packageManager.getApplicationLabel(info).toString()
-                } catch (_: Exception) {
-                    pkg
-                }
-                return Pair(pkg, appName)
-            }
-        }
-
-        // Domain heuristic association for prominent services
-        val lowerDomain = domain.lowercase()
-        return when {
-            lowerDomain.contains("youtube") || lowerDomain.contains("googlevideo") ->
-                Pair("com.google.android.youtube", "YouTube")
-            lowerDomain.contains("instagram") || lowerDomain.contains("cdninstagram") ->
-                Pair("com.instagram.android", "Instagram")
-            lowerDomain.contains("whatsapp") ->
-                Pair("com.whatsapp", "WhatsApp")
-            lowerDomain.contains("google") || lowerDomain.contains("gstatic") || lowerDomain.contains("googleapis") ->
-                Pair("com.google.android.googlequicksearchbox", "Google")
-            lowerDomain.contains("facebook") || lowerDomain.contains("fbcdn") ->
-                Pair("com.facebook.katana", "Facebook")
-            lowerDomain.contains("netflix") || lowerDomain.contains("nflxvideo") ->
-                Pair("com.netflix.mediaclient", "Netflix")
-            lowerDomain.contains("spotify") || lowerDomain.contains("scdn.co") ->
-                Pair("com.spotify.music", "Spotify")
-            else ->
-                Pair("unknown", "System / Network Stack")
-        }
-    }
-
     suspend fun flushPendingDeltas() {
         if (pendingDeltas.isEmpty()) return
 
         val repo = repository ?: return
-        val snapshot = HashMap(pendingDeltas)
-        pendingDeltas.clear()
+        val keys = pendingDeltas.keys()
 
-        for ((flowKey, delta) in snapshot) {
+        for (flowKey in keys) {
+            val delta = pendingDeltas.remove(flowKey) ?: continue
             try {
                 repo.upsertTrafficFlow(
                     flowKey = flowKey,
@@ -266,10 +268,10 @@ class DomainFlowTracker(
                     )
                 )
 
-                // Milestone 10: Trigger alert evaluations for newly observed apps/domains and thresholds
+                // Trigger alert evaluations for newly observed apps/domains and thresholds
                 try {
                     com.example.dataguard.DataGuardApp.instance.let { app ->
-                        if (delta.packageName != "unknown" && delta.appName != "Unknown") {
+                        if (delta.packageName != "unknown" && delta.appName != "Unknown / Web Traffic") {
                             app.dataPlanAlertManager.notifyNewAppObserved(delta.appName, delta.packageName, delta.timestamp)
                             app.dataPlanAlertManager.checkAppExceedsMb(delta.appName, delta.packageName, delta.uploadDelta + delta.downloadDelta, delta.timestamp)
                         }
@@ -290,8 +292,12 @@ class DomainFlowTracker(
         val iterator = ipToDomainMap.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
-            if (entry.value.second < now) {
-                iterator.remove()
+            val set = entry.value
+            synchronized(set) {
+                set.removeIf { it.expireTimestamp < now }
+                if (set.isEmpty()) {
+                    iterator.remove()
+                }
             }
         }
     }

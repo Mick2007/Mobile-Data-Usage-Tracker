@@ -792,7 +792,7 @@ class DataGuardUnitTest {
         record.write(chBytes)
 
         val buffer = java.nio.ByteBuffer.wrap(record.toByteArray())
-        val extractedSni = com.example.dataguard.vpn.engine.SniParser.extractSni(buffer)
+        val extractedSni = com.example.dataguard.vpn.engine.TlsSniParser.extractSniHostname(buffer)
         assertEquals("googlevideo.com", extractedSni)
     }
 
@@ -1690,7 +1690,142 @@ class DataGuardUnitTest {
         val topCellular = apps.maxByOrNull { it.mobileTotalBytes }
         assertEquals("AppTwo", topCellular?.appName)
     }
+
+    @Test
+    fun testDomainSuffixAttribution_strictMatching() {
+        // Assert strict domain-suffix matching (RFC / Curated mapping)
+        // "x.com" matches "x.com" and "api.x.com"
+        assertTrue(com.example.dataguard.vpn.engine.AppDomainMatcher.matchesDomainSuffix("x.com", "x.com"))
+        assertTrue(com.example.dataguard.vpn.engine.AppDomainMatcher.matchesDomainSuffix("api.x.com", "x.com"))
+        assertTrue(com.example.dataguard.vpn.engine.AppDomainMatcher.matchesDomainSuffix("abs.twimg.com", "twimg.com"))
+
+        // "dropbox.com" and "linux.com" MUST NOT match "x.com"
+        assertFalse(com.example.dataguard.vpn.engine.AppDomainMatcher.matchesDomainSuffix("dropbox.com", "x.com"))
+        assertFalse(com.example.dataguard.vpn.engine.AppDomainMatcher.matchesDomainSuffix("linux.com", "x.com"))
+        assertFalse(com.example.dataguard.vpn.engine.AppDomainMatcher.matchesDomainSuffix("notx.com", "x.com"))
+
+        // Package inference
+        assertEquals("com.twitter.android", com.example.dataguard.vpn.engine.AppDomainMatcher.inferPackageForDomain("api.x.com"))
+        assertEquals("com.google.android.youtube", com.example.dataguard.vpn.engine.AppDomainMatcher.inferPackageForDomain("m.youtube.com"))
+        assertEquals("com.instagram.android", com.example.dataguard.vpn.engine.AppDomainMatcher.inferPackageForDomain("cdninstagram.com"))
+        assertNull(com.example.dataguard.vpn.engine.AppDomainMatcher.inferPackageForDomain("dropbox.com"))
+        assertNull(com.example.dataguard.vpn.engine.AppDomainMatcher.inferPackageForDomain("linux.com"))
+    }
+
+    @Test
+    fun testDomainAttribution_unverifiedFallbackToUnknown() {
+        val attribution = com.example.dataguard.vpn.engine.AppDomainMatcher.resolveAppInfo(
+            packageManager = null,
+            uid = -1,
+            domain = "unknown-generic-service.org"
+        )
+        // Must not guess
+        assertEquals("unknown", attribution.packageName)
+        assertEquals("Unknown / Web Traffic", attribution.appName)
+        assertEquals(com.example.dataguard.data.entity.AttributionConfidence.UNKNOWN, attribution.confidence)
+        assertFalse(attribution.isVerifiedUid)
+    }
+
+    @Test
+    fun testTlsSniParser_multiSegmentReassembly() {
+        // Synthesize valid TLS 1.2 ClientHello for "github.com"
+        val host = "github.com"
+        val hostBytes = host.toByteArray(Charsets.US_ASCII)
+
+        val sniExt = java.io.ByteArrayOutputStream()
+        sniExt.write(byteArrayOf(0x00, 0x00)) // Extension type: server_name (0)
+        val serverNameListLen = hostBytes.size + 3
+        val extLen = serverNameListLen + 2
+        sniExt.write(byteArrayOf((extLen shr 8).toByte(), extLen.toByte()))
+        sniExt.write(byteArrayOf((serverNameListLen shr 8).toByte(), serverNameListLen.toByte()))
+        sniExt.write(0) // name_type: host_name (0)
+        sniExt.write(byteArrayOf((hostBytes.size shr 8).toByte(), hostBytes.size.toByte()))
+        sniExt.write(hostBytes)
+
+        val extensionsBytes = sniExt.toByteArray()
+
+        val clientHello = java.io.ByteArrayOutputStream()
+        clientHello.write(0x01) // Handshake type: ClientHello
+        val hLen = 38 + 1 + 2 + 1 + 2 + extensionsBytes.size
+        clientHello.write((hLen shr 16) and 0xFF)
+        clientHello.write((hLen shr 8) and 0xFF)
+        clientHello.write(hLen and 0xFF)
+        clientHello.write(byteArrayOf(0x03, 0x03)) // Version TLS 1.2
+        clientHello.write(ByteArray(32)) // Random (32 bytes)
+        clientHello.write(0) // Session ID length (0)
+        clientHello.write(byteArrayOf(0x00, 0x02, 0x00, 0x2f)) // Cipher suites
+        clientHello.write(byteArrayOf(0x01, 0x00)) // Compression methods
+        clientHello.write(byteArrayOf((extensionsBytes.size shr 8).toByte(), extensionsBytes.size.toByte()))
+        clientHello.write(extensionsBytes)
+
+        val chBytes = clientHello.toByteArray()
+
+        val record = java.io.ByteArrayOutputStream()
+        record.write(0x16) // ContentType: Handshake (22)
+        record.write(byteArrayOf(0x03, 0x01)) // Record version TLS 1.0
+        record.write(byteArrayOf((chBytes.size shr 8).toByte(), chBytes.size.toByte()))
+        record.write(chBytes)
+
+        val fullRecordBytes = record.toByteArray()
+        assertTrue(fullRecordBytes.size > 20)
+
+        // Split into two segments simulating TCP packet segmentation across TUN MTU
+        val splitPoint = 15
+        val segment1 = fullRecordBytes.copyOfRange(0, splitPoint)
+        val segment2 = fullRecordBytes.copyOfRange(splitPoint, fullRecordBytes.size)
+
+        val flowBuffer = com.example.dataguard.vpn.engine.TlsFlowBuffer()
+
+        // Feed segment 1: should return NeedMoreData
+        val result1 = flowBuffer.feed(segment1)
+        assertTrue(result1 is com.example.dataguard.vpn.engine.TlsFeedResult.NeedMoreData)
+
+        // Feed segment 2: complete record should yield "github.com"
+        val result2 = flowBuffer.feed(segment2)
+        assertTrue(result2 is com.example.dataguard.vpn.engine.TlsFeedResult.Parsed)
+        assertEquals("github.com", (result2 as com.example.dataguard.vpn.engine.TlsFeedResult.Parsed).sni)
+    }
+
+    @Test
+    fun testProcNetSocketReader_lineParsing() {
+        // Format of /proc/net/tcp line:
+        // sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+        val line = " 1: 0100007F:C5C0 0100007F:1F40 01 00000000:00000000 00:00000000 00000000 10042 0 2469 1 0 0 0 0 -1"
+
+        // Port 0xC5C0 is 50624
+        val uidMatch = com.example.dataguard.vpn.engine.ProcNetSocketReader.parseProcNetLine(line, 50624)
+        assertEquals(10042, uidMatch)
+
+        // Non-matching port should return -1
+        val uidMismatch = com.example.dataguard.vpn.engine.ProcNetSocketReader.parseProcNetLine(line, 8080)
+        assertEquals(-1, uidMismatch)
+    }
+
+    @Test
+    fun testTcpPacketBuilder_checksumAndHeader() {
+        val packet = com.example.dataguard.vpn.engine.TcpPacketBuilder.buildIpv4TcpPacket(
+            srcIp = "10.1.10.1",
+            dstIp = "93.184.216.34",
+            srcPort = 54321,
+            dstPort = 443,
+            seqNum = 1000L,
+            ackNum = 2000L,
+            flags = com.example.dataguard.vpn.engine.TcpPacketBuilder.FLAG_SYN or com.example.dataguard.vpn.engine.TcpPacketBuilder.FLAG_ACK,
+            payload = "Hello".toByteArray(Charsets.US_ASCII)
+        )
+
+        assertNotNull(packet)
+        assertEquals(20 + 20 + 5, packet.size) // IP(20) + TCP(20) + "Hello"(5)
+
+        // IPv4 protocol at offset 9 must be 6 (TCP)
+        assertEquals(6.toByte(), packet[9])
+
+        // Verify IPv4 header checksum validates to zero when re-computed
+        val ipChecksum = com.example.dataguard.vpn.engine.SystemDnsResolver.calculateIpv4Checksum(packet, 0, 20)
+        assertEquals(0.toShort(), ipChecksum)
+    }
 }
+
 
 
 

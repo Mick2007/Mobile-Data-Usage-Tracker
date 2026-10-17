@@ -1,5 +1,6 @@
 package com.example.dataguard.ui.viewmodel
 
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.dataguard.DataGuardApp
@@ -272,7 +273,9 @@ class WebsitesViewModel(
 
     /**
      * Diagnostic helper: records test website traffic to instantly verify live domain tracking.
+     * DEBUG ONLY: This method is intended strictly for testing and diagnostics.
      */
+    @VisibleForTesting
     fun testTrackWebsite(testDomain: String = "wikipedia.org") {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val tracker = DataGuardApp.instance.domainFlowTracker

@@ -73,10 +73,13 @@ class DataGuardVpnService : VpnService() {
             return
         }
 
-        // 3. Clean up any existing interface before re-establishing
+        // 3. Clean up any existing interface and wait for old packet loop to exit before re-establishing
+        try {
+            sessionManager.packetProcessor.stopAndWait(1000L)
+        } catch (_: Exception) {}
         closeVpnInterface()
 
-        // 4. Configure local VPN tunnel interface with dynamic sinkhole routing
+        // 4. Configure local VPN tunnel interface with global routing and DataGuard exclusion
         try {
             val configIntent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -92,50 +95,34 @@ class DataGuardVpnService : VpnService() {
             lastObservedNetworkType = currentNetworkType
             registerNetworkCallback()
 
-            val blockedPkgs = sessionManager.firewallEngine.getBlockedPackages(currentNetworkType)
-            val domainRulePkgs = sessionManager.firewallEngine.getActiveDomainRules()
-                .mapNotNull { it.packageName }
-                .toSet()
-
-            // Target packages that must be routed into the local VPN sinkhole
-            val targetPackages = (blockedPkgs + domainRulePkgs).filter { pkg ->
-                pkg != packageName && pkg != "android" && pkg != "android.system" && pkg.isNotBlank()
-            }.toSet()
-
             val builder = Builder()
                 .setSession(SESSION_NAME)
                 .setMtu(1500)
                 .addAddress("10.1.10.1", 32)
                 .addDnsServer("10.1.10.2")
-                .allowBypass()
+                // ROUTING CHOICE EXPLANATION:
+                // Route all IPv4 user applications through the TUN virtual interface (0.0.0.0/0).
+                // Previously, only apps with explicit block rules were added to addAllowedApplication,
+                // which prevented web browsers and normal apps from reaching the TUN, causing website
+                // tracking to record almost zero traffic. Routing 0.0.0.0/0 ensures all browsers and
+                // applications reach the inspection and tracking pipeline.
+                .addRoute("0.0.0.0", 0)
                 .setConfigureIntent(configurePendingIntent)
 
-            var rulesEnforcedCount = 0
-            if (targetPackages.isNotEmpty()) {
-                // SINKHOLE ROUTING: Route blocked applications into the local VPN tunnel
-                // Non-blocked apps are NOT added to addAllowedApplication, so Android routes them directly to native internet
-                for (pkg in targetPackages) {
-                    try {
-                        builder.addAllowedApplication(pkg)
-                        rulesEnforcedCount++
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Cannot route package $pkg into VPN sinkhole: ${e.message}")
-                    }
-                }
+            // ROUTING CHOICE EXPLANATION (EXCLUSION):
+            // Exclude DataGuard's own package from the VPN tunnel via addDisallowedApplication(packageName).
+            // This ensures that DataGuard's protected upstream sockets (DNS queries, TCP proxy sockets,
+            // UDP relays, and background synchronization) communicate directly with the underlying
+            // network (Wi-Fi or Cellular) without getting intercepted by the TUN device and creating
+            // an infinite self-routing loop.
+            // Per-app and per-domain firewall decisions are evaluated dynamically inside FirewallEngine.
+            try {
+                builder.addDisallowedApplication(packageName)
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot exclude $packageName from VPN tunnel: ${e.message}")
             }
 
-            if (rulesEnforcedCount > 0) {
-                // Sinks all traffic from the blocked applications into TUN
-                builder.addRoute("0.0.0.0", 0)
-            } else {
-                // If no apps are currently blocked on this interface, route only DataGuard itself and DNS
-                // so no third-party applications have their traffic intercepted
-                try {
-                    builder.addAllowedApplication(packageName)
-                } catch (_: Exception) {}
-                builder.addRoute("10.1.10.2", 32)
-            }
-            Log.i(TAG, "Configured firewall on $currentNetworkType with $rulesEnforcedCount blocked applications")
+            Log.i(TAG, "Configured global VPN tunnel on $currentNetworkType with DataGuard excluded")
 
             vpnInterface = builder.establish()
 
@@ -150,10 +137,13 @@ class DataGuardVpnService : VpnService() {
             Log.i(TAG, "DataGuard local VPN established successfully (FD: ${vpnInterface?.fd})")
             sessionManager.onServiceStarted(SESSION_NAME)
 
-            // 5. Start packet processor on established TUN interface with socket protection
+            // 5. Start packet processor on established TUN interface with UDP and TCP socket protection
             vpnInterface?.let { pfd ->
                 sessionManager.packetProcessor.context = applicationContext
                 sessionManager.packetProcessor.socketProtector = { socket ->
+                    this@DataGuardVpnService.protect(socket)
+                }
+                sessionManager.packetProcessor.tcpSocketProtector = { socket ->
                     this@DataGuardVpnService.protect(socket)
                 }
                 sessionManager.packetProcessor.start(pfd, serviceScope)
@@ -230,7 +220,7 @@ class DataGuardVpnService : VpnService() {
     private fun teardownResources() {
         unregisterNetworkCallback()
         try {
-            DataGuardApp.instance.vpnSessionManager.packetProcessor.stop()
+            DataGuardApp.instance.vpnSessionManager.packetProcessor.stopAndWait(1000L)
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping packet processor: ${e.message}")
         }

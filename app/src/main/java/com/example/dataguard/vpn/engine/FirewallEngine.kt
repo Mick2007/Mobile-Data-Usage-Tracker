@@ -438,29 +438,10 @@ class FirewallEngine(
     }
 
     /**
-     * Associates prominent internet services and known domains with package names.
+     * Associates prominent internet services and known domains with package names using strict suffix matching.
      */
     fun inferPackageForDomain(domain: String): String? {
-        val lower = domain.lowercase()
-        return when {
-            lower.contains("whatsapp") -> "com.whatsapp"
-            lower.contains("instagram") || lower.contains("cdninstagram") -> "com.instagram.android"
-            lower.contains("facebook") || lower.contains("fbcdn") -> "com.facebook.katana"
-            lower.contains("youtube") || lower.contains("googlevideo") -> "com.google.android.youtube"
-            lower.contains("netflix") || lower.contains("nflxvideo") -> "com.netflix.mediaclient"
-            lower.contains("spotify") || lower.contains("scdn.co") -> "com.spotify.music"
-            lower.contains("twitter") || lower.contains("x.com") || lower.contains("twimg") -> "com.twitter.android"
-            lower.contains("telegram") || lower.contains("t.me") -> "org.telegram.messenger"
-            lower.contains("tiktok") || lower.contains("byteoversea") -> "com.zhiliaoapp.musically"
-            lower.contains("snapchat") -> "com.snapchat.android"
-            lower.contains("reddit") || lower.contains("redd.it") -> "com.reddit.frontpage"
-            else -> {
-                blockedRulesByPackage.keys.firstOrNull { pkg ->
-                    val mainSegment = pkg.split(".").lastOrNull { it.length > 3 }
-                    mainSegment != null && lower.contains(mainSegment)
-                }
-            }
-        }
+        return AppDomainMatcher.inferPackageForDomain(domain)
     }
 
     fun getBlockedUids(): Set<Int> {

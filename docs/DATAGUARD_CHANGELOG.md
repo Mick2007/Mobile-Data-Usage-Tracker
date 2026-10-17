@@ -868,4 +868,87 @@ Diagnose and resolve Android app update installation failures ("App not installe
 ## Next Step
 - Milestone 14 complete. Push commits to GitHub to generate the first canonically-signed release from the updated workflow.
 
+---
+
+# Milestone 15 — Website-Tracking Pipeline & In-Process Packet Forwarding
+
+## Objective
+Fix the website-tracking pipeline (DataGuardVpnService → PacketProcessor → DnsQueryParser / TlsSniParser → FirewallEngine → DomainFlowTracker → Room Database → WebsitesViewModel) which previously recorded almost no website traffic because non-DNS packets were dropped and non-blocked apps were excluded from TUN.
+
+## Root Causes Identified
+1. **Restricted TUN Routing**: `DataGuardVpnService` only added blocked apps and domain-rule apps to `addAllowedApplication()`. Web browsers and normal applications never reached the TUN interface.
+2. **Packet Dropping (Blackholing)**: `PacketProcessor` read non-DNS TCP/UDP packets from TUN but dropped them without forwarding, preventing apps from communicating over the network when routed to TUN.
+3. **Download Bytes Uncounted**: Download bytes were hardcoded to `0L` for non-DNS flows.
+4. **Restart Race**: `handleStart()` closed the old TUN interface, but `PacketProcessor.start()` returned early if `isRunning` was true, causing the new TUN to never be read after rule reloads or network transitions.
+5. **TLS SNI Fragmentation**: Modern browsers (e.g. Chrome) send ClientHello handshakes exceeding the 1500-byte TUN MTU. Because `buffer.remaining() < recordLength`, SNI parsing failed and returned `null`.
+6. **False-Positive Attribution**: Naive substring matching (`contains("x.com")`) incorrectly attributed unrelated domains like `dropbox.com` and `linux.com` to Twitter/X.
+7. **TUN Socket UID Resolution**: `getConnectionOwnerUid` returned `-1` on synthetic TUN virtual endpoints without a `/proc/net` kernel socket table fallback.
+8. **DNS IP Mapping Overwrites**: Storing a single domain per IP caused "last writer wins" overwrites on shared CDN IPs (Cloudflare, Fastly), with a static 5-minute TTL ignoring authoritative DNS TTLs.
+9. **Race Condition in Delta Flush**: `flushPendingDeltas()` used a copy-then-clear pattern, dropping observations arriving between snapshot creation and `pendingDeltas.clear()`.
+
+## Changes Made
+- **Global TUN Routing & Self-Exclusion (`DataGuardVpnService.kt`)**:
+  - Configured `builder.addRoute("0.0.0.0", 0)` to route all IPv4 user applications into the TUN tunnel.
+  - Added `builder.addDisallowedApplication(packageName)` so DataGuard's own protected sockets (DNS forwarding, TCP proxy, UDP relay) bypass TUN and prevent infinite routing loops.
+  - Removed restrictive `addAllowedApplication()` filtering.
+- **In-Process TCP & UDP Packet Forwarding (`PacketProcessor.kt`, `TcpFlowRelay.kt`, `UdpFlowRelay.kt`, `TcpPacketBuilder.kt`)**:
+  - Implemented `TcpFlowRelay` keyed by 4-tuple: synthesizes TCP SYN-ACK back to TUN, opens protected socket (`protect()`), streams bidirectional payload, and synthesizes TCP data/FIN/RST packets with RFC 793 IP and TCP checksums.
+  - Implemented `UdpFlowRelay` for non-DNS UDP datagrams over protected sockets.
+  - Added bidirectional byte accounting, accurately recording upload and download bytes in `TrafficAccountingEngine` and `DomainFlowTracker`.
+  - Added automatic idle timeout cleanup (60s for TCP, 30s for UDP).
+- **Restart Race Elimination (`PacketProcessor.kt`, `DataGuardVpnService.kt`)**:
+  - Made `PacketProcessor.start()` idempotent for the same file descriptor.
+  - Added `stopAndWait(timeoutMs)` ensuring the previous reader thread terminates cleanly before re-establishing a new TUN.
+- **Multi-Segment TLS SNI Reassembly (`TlsSniParser.kt`) & Deleted `SniParser.kt`**:
+  - Implemented `TlsFlowBuffer` with 16 KB capacity to accumulate TCP payload across packets until the complete ClientHello record is received.
+  - Safely deleted redundant `SniParser.kt`.
+- **QUIC Initial SNI Inspection (`QuicParser.kt`)**:
+  - Created `QuicParser.kt` to inspect RFC 9000 Initial packets on UDP 443.
+  - Implemented fallback to DNS-derived IP-to-domain mapping when SNI is encrypted or unparseable, without guessing.
+- **Strict Domain-Suffix Attribution (`AppDomainMatcher.kt`)**:
+  - Replaced substring matching with strict domain-suffix matching (`matchesDomainSuffix`).
+  - Curated catalog for prominent platforms (YouTube, Instagram, WhatsApp, Facebook, Netflix, Spotify, X/Twitter, Telegram, TikTok, Snapchat, Reddit, Google).
+  - Enforced UID attribution only when verified via `PackageManager`; unverified domains fall back to `UNKNOWN` confidence with label `"Unknown / Web Traffic"`.
+- **Linux `/proc/net` Socket Table Fallback (`ProcNetSocketReader.kt`)**:
+  - Added parser for `/proc/net/tcp`, `/proc/net/tcp6`, `/proc/net/udp`, and `/proc/net/udp6` to resolve caller UIDs from local ports.
+- **Multi-Domain IP Mapping & DNS TTL Honor (`DomainFlowTracker.kt`, `DnsQueryParser.kt`)**:
+  - Stored `MutableSet<DomainMappingEntry>` per IP to support shared CDNs.
+  - Extracted authoritative DNS TTL in `DnsQueryParser` and honored it in `DomainFlowTracker`.
+- **Thread-Safe Delta Persistence (`DomainFlowTracker.kt`)**:
+  - Replaced copy-then-clear with atomic per-key removal (`pendingDeltas.remove(key)`) to eliminate dropped observations.
+- **Test Helper Annotation (`WebsitesViewModel.kt`)**:
+  - Annotated `testTrackWebsite` with `@VisibleForTesting` and debug-only documentation.
+
+## Files Created
+- `app/src/main/java/com/example/dataguard/vpn/engine/AppDomainMatcher.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/QuicParser.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/TcpPacketBuilder.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/TcpFlowRelay.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/UdpFlowRelay.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/ProcNetSocketReader.kt`
+
+## Files Modified
+- `app/src/main/java/com/example/dataguard/vpn/service/DataGuardVpnService.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/PacketProcessor.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/TlsSniParser.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/DnsQueryParser.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/DomainFlowTracker.kt`
+- `app/src/main/java/com/example/dataguard/vpn/engine/FirewallEngine.kt`
+- `app/src/main/java/com/example/dataguard/ui/viewmodel/WebsitesViewModel.kt`
+- `app/src/test/java/com/example/DataGuardUnitTest.kt`
+- `docs/DATAGUARD_CHANGELOG.md`
+
+## Files Deleted
+- `app/src/main/java/com/example/dataguard/vpn/engine/SniParser.kt`
+
+## Verification
+- Executed `gradle :app:testDebugUnitTest`: 33 tasks executed, all unit tests passed.
+  - Verified strict domain-suffix matching (asserted `dropbox.com` and `linux.com` do not match `x.com`).
+  - Verified multi-segment TLS ClientHello reassembly and SNI extraction across MTU split.
+  - Verified `/proc/net/tcp` socket table line parsing and decimal local port UID matching.
+  - Verified IPv4 TCP packet synthesis with valid IP and TCP checksums.
+  - Verified unverified attribution fallback to `UNKNOWN` confidence.
+- Clean compilation verified via `compile_applet`.
+
+
 
