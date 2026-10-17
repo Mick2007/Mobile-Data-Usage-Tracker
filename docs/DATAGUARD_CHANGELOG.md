@@ -837,8 +837,8 @@ Diagnose and resolve Android app update installation failures ("App not installe
 
 ## Changes Made
 - **Restored Persistent Canonical Keystore in GitHub Actions (`.github/workflows/build1.yml`)**:
-  - Replaced `keytool -genkey` with a step that decodes the canonical project keystore from `debug.keystore.base64`:
-    `base64 -d debug.keystore.base64 > debug.keystore`
+  - Replaced `keytool -genkey` with a robust step that checks for `debug.keystore.base64`, `debug.keystore`, or falls back to directly decoding an embedded canonical base64 string directly inside the workflow file.
+  - Ensures the workflow never fails even if `debug.keystore.base64` is omitted from Git checkout.
   - Guarantees identical certificate fingerprints across all builds:
     - **SHA-1**: `BA:44:C9:6B:48:A7:E7:2C:D3:05:9A:19:2B:07:BE:CB:A0:DF:3C:1A`
     - **SHA-256**: `E9:9E:20:4D:E8:69:86:A9:0B:5F:CA:A5:F7:DB:A2:BD:39:2F:C5:69:7D:1E:5F:4C:63:9F:0A:1E:59:81:5B:37`
