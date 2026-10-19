@@ -950,5 +950,45 @@ Fix the website-tracking pipeline (DataGuardVpnService → PacketProcessor → D
   - Verified unverified attribution fallback to `UNKNOWN` confidence.
 - Clean compilation verified via `compile_applet`.
 
+---
+
+# Milestone 16 — Background Theme Selection (Dark, White, System)
+
+## Objective
+Provide a setting in the Settings tab allowing users to dynamically select between **Dark**, **White** (Light), or **System default** background themes for the application, with instant real-time UI switching and persistent preference storage.
+
+## Changes Made
+- **Created `AppThemeMode` Model (`com.example.ui.theme.AppThemeMode`)**:
+  - Defined `SYSTEM` ("System", follows device setting), `LIGHT` ("White", crisp white background with high contrast), and `DARK` ("Dark", deep dark background).
+- **Persistent State Management (`DataGuardApp.kt`, `SettingsViewModel.kt`)**:
+  - Saved theme preference in `SharedPreferences` under `KEY_APP_THEME = "app_theme_mode"`.
+  - Exposed reactive `StateFlow<AppThemeMode>` in `DataGuardApp.instance.appThemeMode` and `SettingsViewModel.currentThemeMode`.
+  - Implemented `selectThemeMode(mode: AppThemeMode)` with confirmation toast notifications.
+- **Dynamic Theme Provider (`Theme.kt`, `MainActivity.kt`)**:
+  - Updated `MyApplicationTheme` to accept `themeMode: AppThemeMode` and map directly to `LightColorScheme` (crisp white `#F8FAFC` background and `#FFFFFF` surface) or `DarkColorScheme` (deep dark `#0B0F19` background).
+  - Wired `MainActivity.kt` to observe `DataGuardApp.instance.appThemeMode`, instantly recomposing the entire app tree whenever the theme mode changes.
+- **Settings Screen UI (`SettingsScreen.kt`)**:
+  - Added dedicated **"Appearance & Background"** section in the Settings tab.
+  - Built an accessible 3-way selection component (`ThemeOptionItem`) with custom icons (`Icons.Default.LightMode`, `Icons.Default.DarkMode`, `Icons.Default.BrightnessAuto`), checkmark indicators, rounded container cards, and accessible touch targets.
+  - Added unique Compose testTags (`theme_selection_card`, `theme_option_white`, `theme_option_dark`, `theme_option_system`).
+
+## Files Created
+- `app/src/main/java/com/example/ui/theme/AppThemeMode.kt`
+
+## Files Modified
+- `app/src/main/java/com/example/ui/theme/Theme.kt`
+- `app/src/main/java/com/example/MainActivity.kt`
+- `app/src/main/java/com/example/dataguard/DataGuardApp.kt`
+- `app/src/main/java/com/example/dataguard/ui/viewmodel/SettingsViewModel.kt`
+- `app/src/main/java/com/example/dataguard/ui/screen/SettingsScreen.kt`
+- `app/src/test/java/com/example/DataGuardUnitTest.kt`
+- `docs/DATAGUARD_CHANGELOG.md`
+
+## Verification
+- Unit test added and verified in `DataGuardUnitTest.kt` (`testAppThemeMode_selectionAndDefaults`).
+- Executed `gradle :app:testDebugUnitTest`: 33 tasks passed.
+- Clean compilation verified via `compile_applet`.
+
+
 
 

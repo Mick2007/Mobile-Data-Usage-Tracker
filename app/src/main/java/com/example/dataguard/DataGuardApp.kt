@@ -13,8 +13,12 @@ import com.example.dataguard.service.DataMonitorService
 import com.example.dataguard.utils.CsvExporter
 import com.example.dataguard.utils.NotificationHelper
 import com.example.dataguard.utils.PermissionHelper
+import com.example.ui.theme.AppThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 class DataGuardApp : Application() {
@@ -142,6 +146,21 @@ class DataGuardApp : Application() {
             monthlyLimitBytes = value * 1024L * 1024L
         }
 
+    private val _appThemeMode by lazy {
+        MutableStateFlow(
+            AppThemeMode.fromKey(
+                prefs.getString(KEY_APP_THEME, AppThemeMode.SYSTEM.key) ?: AppThemeMode.SYSTEM.key
+            )
+        )
+    }
+    val appThemeMode: StateFlow<AppThemeMode>
+        get() = _appThemeMode.asStateFlow()
+
+    fun setAppThemeMode(mode: AppThemeMode) {
+        _appThemeMode.value = mode
+        prefs.edit().putString(KEY_APP_THEME, mode.key).apply()
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -233,6 +252,7 @@ class DataGuardApp : Application() {
         const val KEY_WEEKLY_LIMIT_UNIT = "weekly_limit_unit"
         const val KEY_MONTHLY_LIMIT_UNIT = "monthly_limit_unit"
         const val KEY_AUTO_IDLE_SAVER = "auto_idle_saver"
+        const val KEY_APP_THEME = "app_theme_mode"
 
         const val DEFAULT_DAILY_LIMIT_BYTES: Long = 1000L * 1024L * 1024L // 1000 MB
         val DEFAULT_WEEKLY_LIMIT_BYTES: Long = (6.8 * 1024.0 * 1024.0 * 1024.0).toLong() // 6.8 GB (7,301,444,403 bytes)

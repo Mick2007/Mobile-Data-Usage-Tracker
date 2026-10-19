@@ -1824,6 +1824,18 @@ class DataGuardUnitTest {
         val ipChecksum = com.example.dataguard.vpn.engine.SystemDnsResolver.calculateIpv4Checksum(packet, 0, 20)
         assertEquals(0.toShort(), ipChecksum)
     }
+
+    @Test
+    fun testAppThemeMode_selectionAndDefaults() {
+        assertEquals(com.example.ui.theme.AppThemeMode.LIGHT, com.example.ui.theme.AppThemeMode.fromKey("light"))
+        assertEquals(com.example.ui.theme.AppThemeMode.DARK, com.example.ui.theme.AppThemeMode.fromKey("dark"))
+        assertEquals(com.example.ui.theme.AppThemeMode.SYSTEM, com.example.ui.theme.AppThemeMode.fromKey("system"))
+        assertEquals(com.example.ui.theme.AppThemeMode.SYSTEM, com.example.ui.theme.AppThemeMode.fromKey("unknown"))
+
+        assertEquals("White", com.example.ui.theme.AppThemeMode.LIGHT.title)
+        assertEquals("Dark", com.example.ui.theme.AppThemeMode.DARK.title)
+        assertEquals("System", com.example.ui.theme.AppThemeMode.SYSTEM.title)
+    }
 }
 
 

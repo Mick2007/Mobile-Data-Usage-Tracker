@@ -35,15 +35,18 @@ import com.example.dataguard.ui.screen.FirewallScreen
 import com.example.dataguard.ui.screen.HotspotScreen
 import com.example.dataguard.ui.screen.SettingsScreen
 import com.example.dataguard.ui.screen.StatsScreen
+import com.example.dataguard.DataGuardApp
 import com.example.dataguard.ui.screen.WebsitesScreen
 import com.example.ui.theme.MyApplicationTheme
+import androidx.compose.runtime.collectAsState
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val themeMode by DataGuardApp.instance.appThemeMode.collectAsState()
+            MyApplicationTheme(themeMode = themeMode) {
                 DataGuardNavigationHost()
             }
         }

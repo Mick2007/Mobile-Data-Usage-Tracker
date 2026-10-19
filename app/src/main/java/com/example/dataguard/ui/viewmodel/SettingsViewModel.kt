@@ -7,6 +7,7 @@ import com.example.dataguard.data.repository.DataRepository
 import com.example.dataguard.utils.DataLimitUnit
 import com.example.dataguard.utils.DataUnitUtils
 import com.example.dataguard.utils.PermissionHelper
+import com.example.ui.theme.AppThemeMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +18,13 @@ class SettingsViewModel(
     private val repository: DataRepository,
     private val permissionHelper: PermissionHelper
 ) : ViewModel() {
+
+    val currentThemeMode: StateFlow<AppThemeMode> = DataGuardApp.instance.appThemeMode
+
+    fun selectThemeMode(mode: AppThemeMode) {
+        DataGuardApp.instance.setAppThemeMode(mode)
+        _toastMessage.value = "Theme updated to ${mode.title}"
+    }
 
     private val _hasUsageStatsPermission = MutableStateFlow(false)
     val hasUsageStatsPermission: StateFlow<Boolean> = _hasUsageStatsPermission.asStateFlow()

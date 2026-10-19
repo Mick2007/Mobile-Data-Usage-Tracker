@@ -22,15 +22,20 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Warning
+import com.example.ui.theme.AppThemeMode
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -81,6 +86,7 @@ fun SettingsScreen(
     val hasUsageStats by viewModel.hasUsageStatsPermission.collectAsState()
     val hasBatteryExemption by viewModel.hasBatteryOptimizationExemption.collectAsState()
     val hasNotifications by viewModel.hasNotificationPermission.collectAsState()
+    val currentThemeMode by viewModel.currentThemeMode.collectAsState()
 
     val dailyLimitBytes by viewModel.dailyLimitBytes.collectAsState()
     val weeklyLimitBytes by viewModel.weeklyLimitBytes.collectAsState()
@@ -170,6 +176,92 @@ fun SettingsScreen(
                 onRequest = { viewModel.requestNotificationPermission() },
                 testTag = "perm_notifications"
             )
+
+            // Appearance & Background Theme Selection Section
+            Text(
+                text = "Appearance & Background",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+            )
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("theme_selection_card"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Palette,
+                                contentDescription = "Theme",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Theme Mode",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Select dark, white, or device system background",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ThemeOptionItem(
+                            title = "White",
+                            subtitle = "Light background",
+                            icon = Icons.Default.LightMode,
+                            isSelected = currentThemeMode == AppThemeMode.LIGHT,
+                            onClick = { viewModel.selectThemeMode(AppThemeMode.LIGHT) },
+                            modifier = Modifier.weight(1f),
+                            testTag = "theme_option_white"
+                        )
+                        ThemeOptionItem(
+                            title = "Dark",
+                            subtitle = "Dark background",
+                            icon = Icons.Default.DarkMode,
+                            isSelected = currentThemeMode == AppThemeMode.DARK,
+                            onClick = { viewModel.selectThemeMode(AppThemeMode.DARK) },
+                            modifier = Modifier.weight(1f),
+                            testTag = "theme_option_dark"
+                        )
+                        ThemeOptionItem(
+                            title = "System",
+                            subtitle = "Device default",
+                            icon = Icons.Default.BrightnessAuto,
+                            isSelected = currentThemeMode == AppThemeMode.SYSTEM,
+                            onClick = { viewModel.selectThemeMode(AppThemeMode.SYSTEM) },
+                            modifier = Modifier.weight(1f),
+                            testTag = "theme_option_system"
+                        )
+                    }
+                }
+            }
 
             // Milestone 10: Carrier Data Plan & Alerts Navigation Banner
             Card(
@@ -772,3 +864,94 @@ private fun QuotaCard(
         }
     }
 }
+
+@Composable
+private fun ThemeOptionItem(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    testTag: String
+) {
+    val containerColor = if (isSelected) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    }
+    val contentColor = if (isSelected) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val borderColor = if (isSelected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        Color.Transparent
+    }
+
+    Card(
+        modifier = modifier
+            .testTag(testTag)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = androidx.compose.foundation.BorderStroke(if (isSelected) 2.dp else 1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                        else MaterialTheme.colorScheme.surface
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = if (isSelected) MaterialTheme.colorScheme.primary else contentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = contentColor
+                )
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp,
+                    color = contentColor.copy(alpha = 0.8f)
+                ),
+                maxLines = 1
+            )
+            if (isSelected) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Selected",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(14.dp)
+                )
+            } else {
+                Spacer(modifier = Modifier.height(18.dp))
+            }
+        }
+    }
+}
+
