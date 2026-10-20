@@ -1,147 +1,150 @@
-# Comprehensive Fix for DataGuard Website-Tracking & VPN Pipeline
+# DataGuard: Theme Customization & Comprehensive Websites Export
 
-This plan fixes the DataGuard website-tracking pipeline (DataGuardVpnService → PacketProcessor → DnsQueryParser / TlsSniParser → FirewallEngine → DomainFlowTracker → Room Database → WebsitesViewModel) by implementing global TUN routing, user-space TCP and UDP packet forwarding, restart race prevention, multi-segment TLS SNI reassembly, QUIC Initial inspection, strict domain-suffix attribution, and thread-safe delta persistence.
+This plan provides background theme customization (Dark, White, System) in Settings, relocates and upgrades data export into a dedicated tab in the Websites screen featuring presets (Previous Day, 7 Days, 30 Days) and a custom calendar range picker, and clarifies the 0.0.0.0/0 VPN routing architecture.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> **Confirmed Architectural Decisions**:
-> 1. **User-Space TCP Forwarding**: In-process TCP proxy relay with synthetic handshake, socket protection (`protect()`), bidirectional data relay, TCP/IP checksum synthesis back to TUN, and download byte accounting.
-> 2. **QUIC on UDP 443**: Parse SNI from QUIC Initial packets (RFC 9000 CRYPTO frames); fall back to DNS-derived IP mapping if unparseable; never guess.
-> 3. **Global TUN Routing**: Route all user applications through TUN (`0.0.0.0/0`), exclude DataGuard with `addDisallowedApplication(packageName)`, and enforce all app/domain firewall rules inside `FirewallEngine`.
+> **Confirmed Choices & Clarifications**:
+> 1. **Export Relocation**: Move data export completely to the **Websites tab**, removing the export UI from the Analytics (Stats) tab.
+> 2. **Export Scope**: Full audit report including summary totals, per-domain telemetry, and per-app data usage breakdown.
+> 3. **Time Window & Date Presets**: Quick selection presets for **Previous Day (Yesterday)**, **Past 7 Days**, **Past 30 Days**, plus a **Custom Calendar Date Range** picker.
+> 4. **VPN 0.0.0.0/0 Architecture Clarification**:
+>    - `0.0.0.0/0` directs all outbound device traffic into the TUN interface.
+>    - In the original buggy code, non-DNS packets were read and dropped, causing apps to lose connectivity.
+>    - In our fixed pipeline, `PacketProcessor` forwards packets to the destination using protected sockets (`VpnService.protect()`, which bypass the TUN) and injects responses back into the TUN. Apps retain full internet connectivity while website domains and upload/download bytes are tracked.
 
 ---
 
-## 1. Overview & System Pipeline
+## 1. Overview & Core Concept
 
-The website-tracking pipeline operates across six decoupled layers:
+- **What It Does**:
+  - Adds a theme selector to the Settings tab allowing users to toggle between **White** (Light), **Dark**, and **System** backgrounds.
+  - Relocates the export capability from Analytics into a new **Export** tab inside the Websites screen.
+  - Users can select past days, choose between quick presets (Previous Day, 7 Days, 30 Days), or pick a custom date range via a calendar picker to inspect and export detailed reports containing domain logs, per-app data usage, and summary totals.
+- **Key Value**:
+  - Delivers complete historical audit visibility directly where domain tracking is managed, while giving users personalized visual control over light and dark modes.
+
+---
+
+## 2. User Experience & Visual Design
+
+### Settings Tab: Theme Selection
+- **Theme Cards**: Clean, modern card group in the Settings screen showing:
+  - **White**: Crisp light background with subtle slate borders and dark typography.
+  - **Dark**: Deep dark background (`#0B111E`) with vibrant cyan and indigo accents.
+  - **System**: Automatically matches device system dark/light configuration.
+- **Immediate Feedback**: Instant visual application without requiring an app restart, with the chosen mode persisted in app preferences.
+
+### Websites Tab: New "Export" Screen & Tab
+- **Integrated Navigation**: A fourth tab in `WebsitesScreen` alongside `All Domains`, `Blocked`, and `Allowed`:
+  ```
+  [ All Domains ]  [ Blocked ]  [ Allowed ]  [ Export ]
+  ```
+- **Date Range Selector**:
+  - Segmented chips for quick presets: **Previous Day**, **Past 7 Days**, **Past 30 Days**, and **Custom Range**.
+  - Clicking **Custom Range** launches a Material 3 Date Range Picker dialog for granular calendar selection.
+- **Interactive Telemetry Preview**:
+  - **Summary Metrics Cards**: Total Data, Total Upload, and Total Download for the selected time window.
+  - **Top Domains Breakdown**: Ranked list of domains accessed during the period with upload, download, and mapped app labels.
+  - **App Usage Distribution**: Bandwidth consumption grouped by application during the selected window.
+- **Export & Share Actions**:
+  - Primary button: **Export Full CSV Report** (triggers Android share sheet via FileProvider).
+  - Clear snackbar notifications confirming export generation or alerting if no records exist in the chosen period.
+
+### Analytics Tab (`StatsScreen`):
+- Clean removal of the legacy single-table export button and info card, directing data export cleanly into the Websites experience.
+
+---
+
+## 3. Key Product Decisions & Trade-Offs
+
+- **Decision 1: Full Multi-Section CSV Export**:
+  - *Chosen Approach*: The generated CSV contains distinct, organized sections: (1) Report Metadata & Totals, (2) Domain Traffic Breakdown, (3) Per-App Bandwidth Usage, and (4) Raw Network Flow Logs.
+  - *Why*: Provides analysts and privacy-conscious users with an actionable audit trail rather than a flat, unaggregated dump.
+- **Decision 2: Local SharedPreferences & StateFlow Theme Engine**:
+  - *Chosen Approach*: `AppThemeMode` backed by `SharedPreferences` in `DataGuardApp` and exposed as a reactive `StateFlow` collected at `MainActivity`.
+  - *Why*: Eliminates flickering on launch and synchronizes theme state across all screens instantly.
+- **Decision 3: In-Memory Date Range Filtering with Room Repository Queries**:
+  - *Chosen Approach*: Query `DataRepository` for flows and usage entities between `startTimestamp` and `endTimestamp`, aggregating summaries reactively in `WebsitesViewModel`.
+  - *Why*: Fast, responsive updates when switching between Yesterday, 7 Days, and Custom Calendar selections.
+
+---
+
+## 4. Technical Architecture & Data Strategy
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        DataGuard Pipeline Flow                         │
+│                        DataGuard UI & Export Flow                      │
 ├────────────────────────────────────────────────────────────────────────┤
-│ 1. DataGuardVpnService (TUN Interface):                                │
-│    - Global 0.0.0.0/0 route intercepts all user app traffic            │
-│    - addDisallowedApplication(packageName) prevents local loop         │
+│ 1. SettingsScreen & SettingsViewModel:                                 │
+│    - User selects White / Dark / System mode                           │
+│    - Updates DataGuardApp.setAppThemeMode() → Recomposes Theme.kt     │
 ├────────────────────────────────────────────────────────────────────────┤
-│ 2. PacketProcessor (Forwarding, SNI & Inspection):                     │
-│    - TCP: Per-flow proxy relay, synthetic SYN-ACK, bidirectional pump │
-│    - UDP: Protected DatagramSocket relay; UDP 53 intercepted for DNS   │
-│    - TLS SNI Reassembly: Buffers ClientHello across segments (≤16 KB)  │
-│    - QUIC: Parses Initial CRYPTO frames for SNI on UDP 443             │
-│    - UID Attribution: getConnectionOwnerUid with /proc/net fallback    │
+│ 2. WebsitesScreen (Export Tab):                                        │
+│    - Date Range Bar: [Yesterday] [7 Days] [30 Days] [Custom Range]     │
+│    - DateRangePickerDialog for custom start/end selection              │
 ├────────────────────────────────────────────────────────────────────────┤
-│ 3. FirewallEngine:                                                     │
-│    - Evaluates App + Domain rules, Global Domain rules, and App blocks │
-│    - Drops or synthesizes RST/NXDOMAIN for blocked connections         │
+│ 3. WebsitesViewModel:                                                  │
+│    - Holds selectedExportRange: StateFlow<DateRange>                   │
+│    - Aggregates filtered DomainSummary, AppUsage, and Total bytes      │
+│    - Prepares export preview state                                     │
 ├────────────────────────────────────────────────────────────────────────┤
-│ 4. DomainFlowTracker:                                                  │
-│    - Suffix-based app attribution (no substring false-positives)       │
-│    - Multi-domain per IP mapping with DNS answer TTL honor             │
-│    - Thread-safe delta aggregation with atomic per-key removal         │
+│ 4. CsvExporter:                                                        │
+│    - Formats comprehensive CSV report:                                 │
+│      * Section A: Summary & Totals                                     │
+│      * Section B: Domain Activity (upload, download, visits, app)      │
+│      * Section C: Per-App Data Usage                                   │
+│      * Section D: Timestamped Network Flows                            │
+│    - Writes to cacheDir and shares via FileProvider Intent             │
 ├────────────────────────────────────────────────────────────────────────┤
-│ 5. DataRepository & Room Database (DataGuardDatabase):                 │
-│    - Upserts NetworkFlowEntity and aggregates DomainSummary            │
-├────────────────────────────────────────────────────────────────────────┤
-│ 6. WebsitesViewModel & WebsitesScreen:                                 │
-│    - Live telemetry observation flow and domain statistics             │
+│ 5. StatsScreen (Analytics):                                            │
+│    - Export UI removed to keep Analytics focused purely on telemetry   │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
----
+### Proposed Changes
 
-## 2. Technical Architecture & Detailed Implementation Steps
+#### 1. `AppThemeMode.kt` & `SettingsScreen.kt`
+- Confirm `AppThemeMode` (LIGHT, DARK, SYSTEM) and ensure theme selector in `SettingsScreen` is prominent and functional.
+- Maintain persistence via `DataGuardApp.instance.appThemeMode`.
 
-### Fix 1: TUN Routing (`DataGuardVpnService.kt`)
-- In `handleStart()`:
-  - Add `builder.addRoute("0.0.0.0", 0)`.
-  - Add `builder.addDisallowedApplication(packageName)` so DataGuard's own sockets (protected DNS, TCP proxy, HTTP) bypass the TUN.
-  - Remove restricted `addAllowedApplication` filtering so all user applications (browsers, YouTube, system apps) flow into the TUN.
-  - Document the architecture clearly in code comments.
+#### 2. `WebsitesViewModel.kt`
+- Add `EXPORT("Export")` to `DomainFilterTab`.
+- Add state and functions for export date range management:
+  - Preset options: `PREVIOUS_DAY`, `PAST_7_DAYS`, `PAST_30_DAYS`, `CUSTOM`.
+  - Custom date range timestamps (`startDateMillis`, `endDateMillis`).
+- Reactive flow combining date range with Room queries for:
+  - Total upload, download, and aggregate traffic.
+  - Domain breakdown for the selected window.
+  - Per-app usage breakdown for the selected window.
+- Method `exportComprehensiveReport(context)` calling enhanced `CsvExporter`.
 
-### Fix 2: TCP & UDP Packet Forwarding (`PacketProcessor.kt`)
-- **TCP Relay (`TcpFlowRelay`)**:
-  - Keyed by 4-tuple: `(srcIp, srcPort, dstIp, dstPort)`.
-  - On client TCP SYN:
-    - Evaluate firewall rule via `firewallEngine.evaluateConnection`. If blocked, drop or send TCP RST.
-    - If allowed, open standard `Socket()`, call `socketProtector(socket)`, and connect asynchronously to `(dstIp, dstPort)`.
-    - Synthesize and write TCP SYN-ACK back to TUN with valid IPv4 header and TCP checksums.
-    - Start bidirectional forwarding:
-      - **Client -> Remote**: Extract payload from client TCP segments, send over socket `outputStream`. Pass to `TlsSniParser` buffer if port 443.
-      - **Remote -> Client**: Read from socket `inputStream`, package into IPv4 TCP data packets with sequence/ack progression, calculate TCP checksums, and write to TUN.
-      - Accumulate `uploadBytes` and `downloadBytes` into `TrafficAccountingEngine` and `DomainFlowTracker`.
-  - On client TCP FIN/RST or socket EOF: gracefully close and remove flow.
-  - Idle timeout: 60 seconds of inactivity cleans up socket and flow state.
-- **UDP Relay (`UdpFlowRelay`)**:
-  - Keyed by 4-tuple.
-  - If destination is port 53: continue local DNS interception and forwarding via `forwardAndRespondDns`.
-  - If destination is non-DNS (e.g. UDP 443 QUIC):
-    - Evaluate firewall rule.
-    - Open protected `DatagramSocket`, forward datagram to remote host.
-    - Background listener receives response packets, synthesizes IPv4 UDP packet, writes to TUN, and records download bytes.
-    - Idle timeout: 30 seconds.
+#### 3. `CsvExporter.kt`
+- Add `exportComprehensiveWebsiteReport(summary, domainList, appList, flowList)`:
+  - Generates structured CSV with section headers, formatting bytes into readable units and exact byte counts.
+  - Shares via `FileProvider` with MIME type `text/csv`.
 
-### Fix 3: Restart Race & Idempotent Start (`DataGuardVpnService.kt`, `PacketProcessor.kt`)
-- In `DataGuardVpnService.handleStart()`:
-  - Call `sessionManager.packetProcessor.stop()` and wait synchronously/cooperatively for the previous reader thread to terminate before closing old PFD and opening the new one.
-- In `PacketProcessor.start(pfd: ParcelFileDescriptor)`:
-  - Check if the file descriptor matches the currently running loop. If it's the exact same fd and is running, return cleanly.
-  - If a new fd is provided, stop the existing loop and spawn a fresh processing coroutine.
+#### 4. `WebsitesScreen.kt`
+- Update `TabRow` to include the `Export` tab.
+- Build the `WebsitesExportView` composable:
+  - Preset chips row with visual selection indicator.
+  - Material 3 `DateRangePicker` modal for custom calendar range.
+  - Summary metric cards (Total, Upload, Download).
+  - Preview tables for top domains and apps in the selected period.
+  - Prominent "Export & Share CSV" action button.
 
-### Fix 4: TLS SNI Reassembly (`TlsSniParser.kt`) & Delete `SniParser.kt`
-- In `TlsSniParser.kt`:
-  - Enhance `extractSniHostname` to support accumulated byte buffers across TCP segments.
-  - Inspect TLS Record header: if `recordLength > buffer.remaining()`, return status `NEED_MORE_DATA`.
-  - Per-flow reassembly buffer capped at 16 KB. Once the record or extensions are completely received, extract the SNI hostname.
-- Delete `SniParser.kt` and redirect any references to `TlsSniParser`.
-
-### Fix 5: QUIC (UDP 443) Initial SNI Inspection (`QuicParser.kt`)
-- Create `QuicParser.kt`:
-  - Check for QUIC Long Header Initial packet (first byte `0xC0..0xCF`, type Initial `0x00`, version 1 / draft-29).
-  - Extract CRYPTO frame payload containing the TLS 1.3 ClientHello.
-  - Parse SNI hostname via `TlsSniParser`.
-  - If unparseable or packet is encrypted 1-RTT, fall back strictly to `DomainFlowTracker.lookupIp(dstIp)`.
-
-### Fix 6: Strict Domain-Suffix Attribution (`AppDomainMatcher.kt`)
-- Create centralized `AppDomainMatcher.kt`:
-  - Replace naive `domain.contains(...)` with strict domain-suffix matching (`domain.equals(pattern, true) || domain.endsWith("." + pattern, true)`).
-  - Define curated domain mapping for major platforms (YouTube, Instagram, WhatsApp, Facebook, Netflix, Spotify, X/Twitter, TikTok, Reddit).
-  - When verified UID is present, look up package via `PackageManager`. If unverified and no domain-suffix match, set attribution to `UNKNOWN` with label `"Unknown / Web Traffic"`.
-
-### Fix 7: `getConnectionOwnerUid` & `/proc/net` Socket Table Fallback (`PacketProcessor.kt`)
-- Test `ConnectivityManager.getConnectionOwnerUid()`.
-- Add robust fallback parser for `/proc/net/tcp`, `/proc/net/tcp6`, `/proc/net/udp`, and `/proc/net/udp6`:
-  - Match local port in hex format to determine owner UID on Android Linux kernel.
-
-### Fix 8: Multi-Domain IP Mapping & DNS TTL (`DnsQueryParser.kt`, `DomainFlowTracker.kt`)
-- In `DnsQueryParser.kt`:
-  - Parse TTL seconds from DNS Type A answer records: `data class DnsResolvedRecord(val ip: String, val ttlSeconds: Long)`.
-- In `DomainFlowTracker.kt`:
-  - Change `ipToDomainMap` to `ConcurrentHashMap<String, MutableSet<DomainEntry>>` where `DomainEntry(val domain: String, val expireTimestamp: Long)`.
-  - Record mappings using the exact DNS answer TTL (minimum 60s, maximum 86400s).
-
-### Fix 9: Thread-Safe Delta Persistence (`DomainFlowTracker.kt`)
-- Replace `val snapshot = HashMap(pendingDeltas); pendingDeltas.clear()` with atomic per-key removal:
-  ```kotlin
-  for (key in pendingDeltas.keys()) {
-      val delta = pendingDeltas.remove(key) ?: continue
-      repo.upsertTrafficFlow(...)
-  }
-  ```
-  Ensures zero dropped observations during concurrent packet processing.
-
-### Fix 10: Test Helper Isolation (`WebsitesViewModel.kt`)
-- Annotate `testTrackWebsite` with `@VisibleForTesting` and mark with explicit debug-only documentation.
+#### 5. `StatsScreen.kt` & `StatsViewModel.kt`
+- Remove the CSV export button and export info card from `StatsScreen` to finalize moving export completely to the Websites tab.
 
 ---
 
-## 3. Verification & Testing Plan
+## 5. Verification & Testing
 
-### Automated Unit Tests (`app/src/test/java/com/example/DataGuardUnitTest.kt`):
-1. **Multi-segment TLS ClientHello**: Synthesize a split ClientHello across two TCP packets and assert `TlsSniParser` reassembles and extracts the SNI hostname.
-2. **Strict Domain-Suffix Matching**: Assert `"dropbox.com"` and `"linux.com"` do NOT match `"x.com"`.
-3. **Concurrent Flush & Recording**: Launch concurrent coroutines recording flow deltas while `flushPendingDeltas()` runs, asserting zero lost bytes.
-4. **QUIC Initial SNI Parsing**: Synthesize a QUIC Initial packet and verify SNI extraction.
-
-### Functional System Verification:
-- Compile applet with `compile_applet`.
-- Run unit test suite: `gradle :app:testDebugUnitTest`.
+1. **Unit Testing (`app/src/test/java/com/example/DataGuardUnitTest.kt`)**:
+   - Test `AppThemeMode` switching and key serialization.
+   - Test date range calculation for "Previous Day", "7 Days", and "30 Days".
+   - Test comprehensive CSV generation logic and headers.
+2. **Compilation**:
+   - Run `compile_applet` to ensure error-free builds.
+   - Run `gradle :app:testDebugUnitTest` to guarantee all existing and new tests pass.

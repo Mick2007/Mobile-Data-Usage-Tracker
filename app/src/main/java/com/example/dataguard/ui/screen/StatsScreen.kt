@@ -111,20 +111,6 @@ fun StatsScreen(
                         )
                     )
                 }
-
-                Button(
-                    onClick = { viewModel.exportAndShareCSV() },
-                    modifier = Modifier.testTag("export_csv_button"),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Share,
-                        contentDescription = "Export and share",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Export")
-                }
             }
 
             // Period Selector Chips
@@ -301,42 +287,6 @@ fun StatsScreen(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     AppDistributionDonut(apps = appDistribution)
-                }
-            }
-
-            // Export Info Card
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("export_info_card"),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FileDownload,
-                        contentDescription = "Export File",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(32.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Generate Dual-Net CSV Audit",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = "Includes independent Mobile TX/RX, Wi-Fi TX/RX, and aggregated totals.",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        )
-                    }
                 }
             }
         }

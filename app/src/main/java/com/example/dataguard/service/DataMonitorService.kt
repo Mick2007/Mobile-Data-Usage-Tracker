@@ -27,10 +27,26 @@ class DataMonitorService : Service() {
     private var lastTxBytes = 0L
     private var lastRxBytes = 0L
 
+    private fun getDeviceTotalTx(): Long {
+        val total = TrafficStats.getTotalTxBytes()
+        if (total != TrafficStats.UNSUPPORTED.toLong() && total >= 0L) {
+            return total
+        }
+        return TrafficStats.getMobileTxBytes().coerceAtLeast(0L)
+    }
+
+    private fun getDeviceTotalRx(): Long {
+        val total = TrafficStats.getTotalRxBytes()
+        if (total != TrafficStats.UNSUPPORTED.toLong() && total >= 0L) {
+            return total
+        }
+        return TrafficStats.getMobileRxBytes().coerceAtLeast(0L)
+    }
+
     override fun onCreate() {
         super.onCreate()
-        lastTxBytes = TrafficStats.getMobileTxBytes().coerceAtLeast(0L)
-        lastRxBytes = TrafficStats.getMobileRxBytes().coerceAtLeast(0L)
+        lastTxBytes = getDeviceTotalTx()
+        lastRxBytes = getDeviceTotalRx()
         lastCheckTime = System.currentTimeMillis()
     }
 
@@ -49,13 +65,13 @@ class DataMonitorService : Service() {
         val app = application as? DataGuardApp ?: return
         scope.launch {
             while (isActive) {
-                delay(3000) // update speed and check usage every 3 seconds
+                delay(1000) // update speed every 1 second for responsive live network feed
 
                 val now = System.currentTimeMillis()
                 val elapsedSec = ((now - lastCheckTime) / 1000.0).coerceAtLeast(0.5)
 
-                val currentTx = TrafficStats.getMobileTxBytes().coerceAtLeast(0L)
-                val currentRx = TrafficStats.getMobileRxBytes().coerceAtLeast(0L)
+                val currentTx = getDeviceTotalTx()
+                val currentRx = getDeviceTotalRx()
 
                 val speedTx = if (lastTxBytes > 0 && currentTx >= lastTxBytes) {
                     ((currentTx - lastTxBytes) / elapsedSec).toLong()
@@ -136,6 +152,11 @@ class DataMonitorService : Service() {
 
         private val _liveRxSpeed = MutableStateFlow(0L)
         val liveRxSpeed = _liveRxSpeed.asStateFlow()
+
+        fun updateLiveSpeeds(txSpeed: Long, rxSpeed: Long) {
+            _liveTxSpeed.value = txSpeed
+            _liveRxSpeed.value = rxSpeed
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, DataMonitorService::class.java)

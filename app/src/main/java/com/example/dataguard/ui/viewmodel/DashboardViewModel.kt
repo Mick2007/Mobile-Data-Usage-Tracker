@@ -30,6 +30,10 @@ import com.example.dataguard.vpn.engine.FirewallDecision
 import com.example.dataguard.vpn.engine.FirewallEvaluationResult
 import com.example.dataguard.vpn.engine.RuleType
 import android.net.ConnectivityManager
+import android.net.TrafficStats
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -73,9 +77,12 @@ class DashboardViewModel(
     private val _isFromNetworkStats = MutableStateFlow(true)
     val isFromNetworkStats: StateFlow<Boolean> = _isFromNetworkStats.asStateFlow()
 
-    // 8. Live Network Activity (Live speed flow from background monitor service)
-    val liveTxSpeed: StateFlow<Long> = DataMonitorService.liveTxSpeed
-    val liveRxSpeed: StateFlow<Long> = DataMonitorService.liveRxSpeed
+    // 8. Live Network Activity (Active real-time sampling & monitor service)
+    private val _liveTxSpeed = MutableStateFlow(0L)
+    val liveTxSpeed: StateFlow<Long> = _liveTxSpeed.asStateFlow()
+
+    private val _liveRxSpeed = MutableStateFlow(0L)
+    val liveRxSpeed: StateFlow<Long> = _liveRxSpeed.asStateFlow()
 
     // 9. Recent Firewall Events (Blocked connections)
     val recentBlockedEvents: StateFlow<List<BlockedTrafficEventEntity>> =
@@ -201,6 +208,105 @@ class DashboardViewModel(
         checkPermission()
         loadData()
         observeDatabase()
+        startLiveSpeedSampler()
+    }
+
+    private fun getSampleTotalTxBytes(): Long {
+        var bytes = 0L
+        val total = TrafficStats.getTotalTxBytes()
+        if (total != TrafficStats.UNSUPPORTED.toLong() && total >= 0L) {
+            bytes = total
+        } else {
+            bytes = TrafficStats.getMobileTxBytes().coerceAtLeast(0L)
+        }
+        val vpnState = DataGuardApp.instance.vpnSessionManager.vpnState.value
+        if (vpnState.status == com.example.dataguard.vpn.model.VpnStatus.ACTIVE) {
+            bytes += vpnState.bytesIn
+        }
+        return bytes
+    }
+
+    private fun getSampleTotalRxBytes(): Long {
+        var bytes = 0L
+        val total = TrafficStats.getTotalRxBytes()
+        if (total != TrafficStats.UNSUPPORTED.toLong() && total >= 0L) {
+            bytes = total
+        } else {
+            bytes = TrafficStats.getMobileRxBytes().coerceAtLeast(0L)
+        }
+        val vpnState = DataGuardApp.instance.vpnSessionManager.vpnState.value
+        if (vpnState.status == com.example.dataguard.vpn.model.VpnStatus.ACTIVE) {
+            bytes += vpnState.bytesOut
+        }
+        return bytes
+    }
+
+    private fun startLiveSpeedSampler() {
+        // Collect from DataMonitorService
+        viewModelScope.launch {
+            DataMonitorService.liveTxSpeed.collect { speed ->
+                if (speed > 0 || _liveTxSpeed.value == 0L) {
+                    _liveTxSpeed.value = speed
+                }
+            }
+        }
+        viewModelScope.launch {
+            DataMonitorService.liveRxSpeed.collect { speed ->
+                if (speed > 0 || _liveRxSpeed.value == 0L) {
+                    _liveRxSpeed.value = speed
+                }
+            }
+        }
+
+        // Active 1-second interval sampling for real-time live network feed
+        viewModelScope.launch(Dispatchers.IO) {
+            var lastTime = System.currentTimeMillis()
+            var prevTx = getSampleTotalTxBytes()
+            var prevRx = getSampleTotalRxBytes()
+
+            while (isActive) {
+                delay(1000)
+                val now = System.currentTimeMillis()
+                val elapsedSec = ((now - lastTime) / 1000.0).coerceAtLeast(0.5)
+
+                val currTx = getSampleTotalTxBytes()
+                val currRx = getSampleTotalRxBytes()
+
+                val deltaTx = if (prevTx > 0 && currTx >= prevTx) currTx - prevTx else 0L
+                val deltaRx = if (prevRx > 0 && currRx >= prevRx) currRx - prevRx else 0L
+
+                val speedTx = (deltaTx / elapsedSec).toLong()
+                val speedRx = (deltaRx / elapsedSec).toLong()
+
+                _liveTxSpeed.value = speedTx
+                _liveRxSpeed.value = speedRx
+
+                DataMonitorService.updateLiveSpeeds(speedTx, speedRx)
+
+                prevTx = currTx
+                prevRx = currRx
+                lastTime = now
+            }
+        }
+    }
+
+    fun testLiveFeedPulse() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val url = java.net.URL("https://connectivitycheck.gstatic.com/generate_204")
+                val connection = url.openConnection() as java.net.HttpURLConnection
+                connection.connectTimeout = 3000
+                connection.readTimeout = 3000
+                connection.requestMethod = "GET"
+                connection.connect()
+                connection.responseCode
+                connection.disconnect()
+            } catch (e: Exception) {
+                try {
+                    java.net.InetAddress.getByName("dns.google")
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     fun checkPermission() {

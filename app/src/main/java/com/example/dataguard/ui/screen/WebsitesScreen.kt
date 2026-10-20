@@ -22,17 +22,23 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -50,13 +56,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +78,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -78,9 +91,13 @@ import com.example.dataguard.data.entity.NetworkFlowEntity
 import com.example.dataguard.ui.viewmodel.DomainFilterTab
 import com.example.dataguard.ui.viewmodel.DomainSortOption
 import com.example.dataguard.ui.viewmodel.DomainTimeWindow
+import com.example.dataguard.ui.viewmodel.ExportDatePreset
 import com.example.dataguard.ui.viewmodel.ViewModelFactory
 import com.example.dataguard.ui.viewmodel.WebsitesViewModel
 import com.example.dataguard.utils.DataFormatter
+import com.example.dataguard.utils.ExportAppItem
+import com.example.dataguard.utils.ExportDomainItem
+import com.example.dataguard.utils.WebsiteExportReportData
 import com.example.dataguard.vpn.engine.FirewallDecision
 import com.example.dataguard.vpn.engine.FirewallEvaluationResult
 import com.example.dataguard.vpn.engine.NetworkInterfaceType
@@ -103,219 +120,246 @@ fun WebsitesScreen(
     val selectedDomainFlows by viewModel.selectedDomainFlows.collectAsState()
     val domainRules by viewModel.domainRules.collectAsState()
 
+    val exportStatusMessage by viewModel.exportStatusMessage.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
     var showAddDomainDialog by remember { mutableStateOf(false) }
     var showTechnicalDisclaimerDialog by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
-    ) {
-        // Screen Header with Add Domain and Info Action
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = "Websites & Domains",
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                )
-                Text(
-                    text = "${topDomains.size} domains • Wildcard (*.) & App-level blocking",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                )
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Add Domain Rule Button
-                Button(
-                    onClick = { showAddDomainDialog = true },
-                    modifier = Modifier.testTag("add_domain_button"),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Add Domain", style = MaterialTheme.typography.labelSmall)
-                }
-
-                IconButton(
-                    onClick = { showTechnicalDisclaimerDialog = true },
-                    modifier = Modifier.testTag("websites_disclaimer_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Info,
-                        contentDescription = "Technical Disclosure",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
+    LaunchedEffect(exportStatusMessage) {
+        exportStatusMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearExportStatusMessage()
         }
+    }
 
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Navigation Tabs: All Domains, Blocked, Allowed
-        TabRow(
-            selectedTabIndex = selectedFilterTab.ordinal,
-            containerColor = Color.Transparent,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            DomainFilterTab.values().forEach { tab ->
-                val isSelected = selectedFilterTab == tab
-                Tab(
-                    selected = isSelected,
-                    onClick = { viewModel.setFilterTab(tab) },
-                    text = {
-                        Text(
-                            text = tab.label,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                        )
-                    },
-                    modifier = Modifier.testTag("tab_${tab.name.lowercase()}")
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Search Field
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { viewModel.setSearchQuery(it) },
-            placeholder = { Text("Search domains or apps (e.g. youtube.com, facebook)...", fontSize = 13.sp) },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-            },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.setSearchQuery("") }) {
-                        Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(16.dp))
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surface,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surface
-            ),
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .testTag("websites_search_field")
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Time Window & Sort Filter Chips
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(16.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                DomainTimeWindow.values().forEach { window ->
-                    val isSelected = selectedTimeWindow == window
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { viewModel.setTimeWindow(window) },
-                        label = { Text(window.label, style = MaterialTheme.typography.labelSmall) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        ),
-                        modifier = Modifier.testTag("filter_window_${window.name.lowercase()}")
-                    )
-                }
-            }
-
-            // Sort Dropdown Chips
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                DomainSortOption.values().forEach { sort ->
-                    val isSelected = sortOption == sort
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { viewModel.setSortOption(sort) },
-                        label = { Text(sort.label, style = MaterialTheme.typography.labelSmall) },
-                        modifier = Modifier.testTag("sort_${sort.name.lowercase()}")
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Domains List
-        if (topDomains.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 40.dp),
-                contentAlignment = Alignment.TopCenter
+            // Screen Header with Add Domain and Info Action
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.Language,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(44.dp)
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
+                Column {
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "No domains matching '$searchQuery'"
-                        else "No ${selectedFilterTab.label.lowercase()} in this time window.",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Medium,
+                        text = "Websites & Domains",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    )
+                    Text(
+                        text = if (selectedFilterTab == DomainFilterTab.EXPORT) "Audit reports, historical telemetry & multi-section CSV export"
+                        else "${topDomains.size} domains • Wildcard (*.) & App-level blocking",
+                        style = MaterialTheme.typography.bodySmall.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Use 'Add Domain' to enforce a new wildcard/domain rule, or browse with VPN on.",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp
-                        )
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    OutlinedButton(
-                        onClick = { viewModel.testTrackWebsite("wikipedia.org") },
-                        modifier = Modifier.testTag("test_track_website_button")
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (selectedFilterTab != DomainFilterTab.EXPORT) {
+                        // Add Domain Rule Button
+                        Button(
+                            onClick = { showAddDomainDialog = true },
+                            modifier = Modifier.testTag("add_domain_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Add Domain", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { showTechnicalDisclaimerDialog = true },
+                        modifier = Modifier.testTag("websites_disclaimer_button")
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Test Website Traffic Tracking")
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "Technical Disclosure",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             }
-        } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxSize().testTag("top_domains_list")
-            ) {
-                items(topDomains, key = { it.domain }) { domainSummary ->
-                    val eval = viewModel.getDomainStatus(
-                        domain = domainSummary.domain,
-                        packageName = domainSummary.associatedPackages.firstOrNull()
-                    )
-                    val isBlocked = eval.decision == FirewallDecision.BLOCK
 
-                    DomainItemCard(
-                        summary = domainSummary,
-                        isBlocked = isBlocked,
-                        evaluation = eval,
-                        onClick = { viewModel.selectDomain(domainSummary) },
-                        onToggleBlock = { viewModel.toggleDomainBlock(domainSummary.domain) }
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Navigation Tabs: All Domains, Blocked, Allowed, Export
+            TabRow(
+                selectedTabIndex = selectedFilterTab.ordinal,
+                containerColor = Color.Transparent,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                DomainFilterTab.values().forEach { tab ->
+                    val isSelected = selectedFilterTab == tab
+                    Tab(
+                        selected = isSelected,
+                        onClick = { viewModel.setFilterTab(tab) },
+                        text = {
+                            Text(
+                                text = tab.label,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        modifier = Modifier.testTag("tab_${tab.name.lowercase()}")
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (selectedFilterTab == DomainFilterTab.EXPORT) {
+                WebsitesExportView(
+                    viewModel = viewModel,
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                // Search Field
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { viewModel.setSearchQuery(it) },
+                    placeholder = { Text("Search domains or apps (e.g. youtube.com, facebook)...", fontSize = 13.sp) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.setSearchQuery("") }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("websites_search_field")
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Time Window & Sort Filter Chips
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DomainTimeWindow.values().forEach { window ->
+                            val isSelected = selectedTimeWindow == window
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { viewModel.setTimeWindow(window) },
+                                label = { Text(window.label, style = MaterialTheme.typography.labelSmall) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.testTag("filter_window_${window.name.lowercase()}")
+                            )
+                        }
+                    }
+
+                    // Sort Dropdown Chips
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        DomainSortOption.values().forEach { sort ->
+                            val isSelected = sortOption == sort
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { viewModel.setSortOption(sort) },
+                                label = { Text(sort.label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("sort_${sort.name.lowercase()}")
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Domains List
+                if (topDomains.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = 40.dp),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(44.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = if (searchQuery.isNotEmpty()) "No domains matching '$searchQuery'"
+                                else "No ${selectedFilterTab.label.lowercase()} in this time window.",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Use 'Add Domain' to enforce a new wildcard/domain rule, or browse with VPN on.",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            OutlinedButton(
+                                onClick = { viewModel.testTrackWebsite("wikipedia.org") },
+                                modifier = Modifier.testTag("test_track_website_button")
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Test Website Traffic Tracking")
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize().testTag("top_domains_list")
+                    ) {
+                        items(topDomains, key = { it.domain }) { domainSummary ->
+                            val eval = viewModel.getDomainStatus(
+                                domain = domainSummary.domain,
+                                packageName = domainSummary.associatedPackages.firstOrNull()
+                            )
+                            val isBlocked = eval.decision == FirewallDecision.BLOCK
+
+                            DomainItemCard(
+                                summary = domainSummary,
+                                isBlocked = isBlocked,
+                                evaluation = eval,
+                                onClick = { viewModel.selectDomain(domainSummary) },
+                                onToggleBlock = { viewModel.toggleDomainBlock(domainSummary.domain) }
+                            )
+                        }
+                    }
+                }
+            }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 
     // Add Domain Rule Dialog
@@ -947,3 +991,403 @@ private fun AddDomainRuleDialog(
         }
     )
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WebsitesExportView(
+    viewModel: WebsitesViewModel,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val preview by viewModel.exportReportPreview.collectAsState()
+    val selectedPreset by viewModel.selectedExportPreset.collectAsState()
+    val dayOffset by viewModel.exportTargetDayOffset.collectAsState()
+
+    var showDatePickerDialog by remember { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("websites_export_view"),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            // Preset Chips Row: Yesterday, 7 Days, 30 Days, Custom
+            Text(
+                text = "Export Time Window",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ExportDatePreset.values().forEach { preset ->
+                    val isSelected = selectedPreset == preset
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = {
+                            if (preset == ExportDatePreset.CUSTOM) {
+                                showDatePickerDialog = true
+                            }
+                            viewModel.setExportPreset(preset)
+                        },
+                        label = { Text(preset.label) },
+                        leadingIcon = {
+                            if (preset == ExportDatePreset.CUSTOM) {
+                                Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                        modifier = Modifier.testTag("export_preset_${preset.name.lowercase()}")
+                    )
+                }
+            }
+        }
+
+        item {
+            // Day Navigator / Period Indicator
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("export_period_card"),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (selectedPreset == ExportDatePreset.PREVIOUS_DAY) {
+                        IconButton(
+                            onClick = { viewModel.navigateDayOffset(1) },
+                            modifier = Modifier.testTag("export_prev_day_btn")
+                        ) {
+                            Icon(Icons.Default.ChevronLeft, contentDescription = "Earlier Day")
+                        }
+                    } else {
+                        Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = preview.periodLabel,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        )
+                        Text(
+                            text = if (selectedPreset == ExportDatePreset.PREVIOUS_DAY) "Use arrows to browse past days"
+                            else "Aggregated historical audit log",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
+
+                    if (selectedPreset == ExportDatePreset.PREVIOUS_DAY) {
+                        IconButton(
+                            onClick = { viewModel.navigateDayOffset(-1) },
+                            enabled = dayOffset > 0,
+                            modifier = Modifier.testTag("export_next_day_btn")
+                        ) {
+                            Icon(Icons.Default.ChevronRight, contentDescription = "Later Day")
+                        }
+                    } else {
+                        IconButton(
+                            onClick = { showDatePickerDialog = true },
+                            modifier = Modifier.testTag("export_calendar_btn")
+                        ) {
+                            Icon(Icons.Default.DateRange, contentDescription = "Calendar Picker", tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            // Metric Summary Cards
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ExportMetricCard(
+                    title = "Total Data",
+                    value = DataFormatter.formatBytes(preview.totalBytes),
+                    icon = Icons.Default.Public,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                    testTag = "export_metric_total"
+                )
+                ExportMetricCard(
+                    title = "Upload",
+                    value = DataFormatter.formatBytes(preview.totalUploadBytes),
+                    icon = Icons.Default.ArrowUpward,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.weight(1f),
+                    testTag = "export_metric_upload"
+                )
+                ExportMetricCard(
+                    title = "Download",
+                    value = DataFormatter.formatBytes(preview.totalDownloadBytes),
+                    icon = Icons.Default.ArrowDownward,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.weight(1f),
+                    testTag = "export_metric_download"
+                )
+            }
+        }
+
+        item {
+            // Primary Export Button
+            Button(
+                onClick = { viewModel.exportAndShareReport(context) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .testTag("export_website_report_button"),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Export & Share CSV Report", fontWeight = FontWeight.Bold)
+            }
+        }
+
+        item {
+            // Section Header: Top Websites
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Websites Breakdown (${preview.domainItems.size})",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+        }
+
+        if (preview.domainItems.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No domain traffic recorded in this time range.",
+                            style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        )
+                    }
+                }
+            }
+        } else {
+            items(preview.domainItems, key = { it.domain }) { domainItem ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = domainItem.domain,
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "${domainItem.appName} • ${domainItem.connectionCount} requests • ${domainItem.firewallStatus}",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                text = DataFormatter.formatBytes(domainItem.totalBytes),
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                            Text(
+                                text = "↑${DataFormatter.formatBytes(domainItem.uploadBytes)} ↓${DataFormatter.formatBytes(domainItem.downloadBytes)}",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Applications Breakdown (${preview.appItems.size})",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+            )
+        }
+
+        if (preview.appItems.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No application traffic recorded in this range.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        )
+                    }
+                }
+            }
+        } else {
+            items(preview.appItems, key = { it.packageName }) { appItem ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = appItem.appName,
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "${appItem.packageName} • ${appItem.domainCount} domains",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                        Text(
+                            text = DataFormatter.formatBytes(appItem.totalBytes),
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDatePickerDialog) {
+        val dateRangePickerState = rememberDateRangePickerState()
+        DatePickerDialog(
+            onDismissRequest = { showDatePickerDialog = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val start = dateRangePickerState.selectedStartDateMillis
+                        val end = dateRangePickerState.selectedEndDateMillis ?: start
+                        if (start != null) {
+                            viewModel.setCustomExportRange(start, end ?: start)
+                        }
+                        showDatePickerDialog = false
+                    }
+                ) {
+                    Text("Apply Range")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePickerDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        ) {
+            DateRangePicker(
+                state = dateRangePickerState,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExportMetricCard(
+    title: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    color: Color,
+    modifier: Modifier = Modifier,
+    testTag: String
+) {
+    Card(
+        modifier = modifier.testTag(testTag),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 10.sp
+                    )
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = color
+                )
+            )
+        }
+    }
+}
+

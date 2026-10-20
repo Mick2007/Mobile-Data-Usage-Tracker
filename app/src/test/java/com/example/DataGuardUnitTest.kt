@@ -1836,6 +1836,114 @@ class DataGuardUnitTest {
         assertEquals("Dark", com.example.ui.theme.AppThemeMode.DARK.title)
         assertEquals("System", com.example.ui.theme.AppThemeMode.SYSTEM.title)
     }
+
+    @Test
+    fun testExportDatePreset_rangeCalculations() {
+        val (startPrevDay, endPrevDay) = com.example.dataguard.ui.viewmodel.WebsitesViewModel.computeDateRange(
+            com.example.dataguard.ui.viewmodel.ExportDatePreset.PREVIOUS_DAY,
+            dayOffset = 1,
+            customStart = 0L,
+            customEnd = 0L
+        )
+        assertTrue(startPrevDay < endPrevDay)
+        val diff = endPrevDay - startPrevDay
+        assertTrue(diff in (86400000L - 1000L)..(86400000L + 1000L))
+
+        val (start7Days, end7Days) = com.example.dataguard.ui.viewmodel.WebsitesViewModel.computeDateRange(
+            com.example.dataguard.ui.viewmodel.ExportDatePreset.PAST_7_DAYS,
+            dayOffset = 0,
+            customStart = 0L,
+            customEnd = 0L
+        )
+        assertTrue(start7Days < end7Days)
+        val diff7 = end7Days - start7Days
+        assertEquals(7L * 24 * 60 * 60 * 1000L, diff7)
+
+        val (start30Days, end30Days) = com.example.dataguard.ui.viewmodel.WebsitesViewModel.computeDateRange(
+            com.example.dataguard.ui.viewmodel.ExportDatePreset.PAST_30_DAYS,
+            dayOffset = 0,
+            customStart = 0L,
+            customEnd = 0L
+        )
+        assertEquals(30L * 24 * 60 * 60 * 1000L, end30Days - start30Days)
+
+        val customStart = 1700000000000L
+        val customEnd = 1700050000000L
+        val (startCustom, endCustom) = com.example.dataguard.ui.viewmodel.WebsitesViewModel.computeDateRange(
+            com.example.dataguard.ui.viewmodel.ExportDatePreset.CUSTOM,
+            dayOffset = 0,
+            customStart = customStart,
+            customEnd = customEnd
+        )
+        assertEquals(customStart, startCustom)
+        assertEquals(customEnd, endCustom)
+    }
+
+    @Test
+    fun testCsvExporter_comprehensiveWebsiteReportGeneration() {
+        val report = com.example.dataguard.utils.WebsiteExportReportData(
+            title = "DataGuard Website & Telemetry Audit Report",
+            periodLabel = "Yesterday",
+            startTimeMillis = 1700000000000L,
+            endTimeMillis = 1700086400000L,
+            totalUploadBytes = 2048000L,
+            totalDownloadBytes = 8192000L,
+            totalBytes = 10240000L,
+            domainItems = listOf(
+                com.example.dataguard.utils.ExportDomainItem(
+                    domain = "example.com",
+                    appName = "Chrome",
+                    packageName = "com.android.chrome",
+                    uploadBytes = 1024000L,
+                    downloadBytes = 4096000L,
+                    totalBytes = 5120000L,
+                    connectionCount = 12,
+                    firstSeen = 1700000000000L,
+                    lastSeen = 1700086400000L,
+                    confidence = "High",
+                    firewallStatus = "Allowed"
+                )
+            ),
+            appItems = listOf(
+                com.example.dataguard.utils.ExportAppItem(
+                    appName = "Chrome",
+                    packageName = "com.android.chrome",
+                    uploadBytes = 1024000L,
+                    downloadBytes = 4096000L,
+                    totalBytes = 5120000L,
+                    domainCount = 1
+                )
+            )
+        )
+
+        val csv = com.example.dataguard.utils.CsvExporter.formatReportCsv(report)
+        assertNotNull(csv)
+        assertTrue(csv.contains("DataGuard Website & Telemetry Audit Report"))
+        assertTrue(csv.contains("--- SUMMARY TOTALS ---"))
+        assertTrue(csv.contains("--- DOMAIN ACTIVITY BREAKDOWN ---"))
+        assertTrue(csv.contains("\"example.com\""))
+        assertTrue(csv.contains("--- PER-APP DATA USAGE BREAKDOWN ---"))
+        assertTrue(csv.contains("\"Chrome\""))
+        assertTrue(csv.contains("\"com.android.chrome\""))
+    }
+
+    @Test
+    fun testLiveNetworkFeed_speedUpdatesAndFormatting() {
+        // Test DataFormatter speed strings
+        assertEquals("0 B/s", com.example.dataguard.utils.DataFormatter.formatSpeed(0L))
+        assertEquals("1.0 KB/s", com.example.dataguard.utils.DataFormatter.formatSpeed(1024L))
+        assertEquals("1.00 MB/s", com.example.dataguard.utils.DataFormatter.formatSpeed(1048576L))
+        assertEquals("2.50 MB/s", com.example.dataguard.utils.DataFormatter.formatSpeed((2.5 * 1024 * 1024).toLong()))
+
+        // Test DataMonitorService updateLiveSpeeds
+        com.example.dataguard.service.DataMonitorService.updateLiveSpeeds(
+            txSpeed = 512000L,
+            rxSpeed = 1536000L
+        )
+
+        assertEquals(512000L, com.example.dataguard.service.DataMonitorService.liveTxSpeed.value)
+        assertEquals(1536000L, com.example.dataguard.service.DataMonitorService.liveRxSpeed.value)
+    }
 }
 
 

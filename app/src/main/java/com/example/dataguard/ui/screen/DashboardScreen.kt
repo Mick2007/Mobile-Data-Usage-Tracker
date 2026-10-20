@@ -337,43 +337,56 @@ fun DashboardScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(36.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF3B82F6).copy(alpha = 0.15f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Speed,
-                            contentDescription = null,
+                            contentDescription = "Live Network Speedometer",
                             tint = Color(0xFF3B82F6),
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Live Network Feed",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(if (liveRxSpeed > 0 || liveTxSpeed > 0) Color(0xFF10B981) else Color(0xFF94A3B8))
+                            )
+                        }
                         Text(
-                            text = "Live Network Speed",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Real-time socket transmission",
+                            text = if (liveRxSpeed > 0 || liveTxSpeed > 0) "Transmitting packets" else "Real-time socket transmission",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Column(horizontalAlignment = Alignment.End) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.ArrowDownward, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.ArrowDownward, contentDescription = "Download speed", tint = Color(0xFF10B981), modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(2.dp))
                             Text(
                                 text = DataFormatter.formatSpeed(liveRxSpeed),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF10B981)
+                                color = Color(0xFF10B981),
+                                modifier = Modifier.testTag("live_download_speed")
                             )
                         }
                         Text("Download", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -381,16 +394,31 @@ fun DashboardScreen(
 
                     Column(horizontalAlignment = Alignment.End) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.ArrowUpward, contentDescription = null, tint = Color(0xFF3B82F6), modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.ArrowUpward, contentDescription = "Upload speed", tint = Color(0xFF3B82F6), modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(2.dp))
                             Text(
                                 text = DataFormatter.formatSpeed(liveTxSpeed),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF3B82F6)
+                                color = Color(0xFF3B82F6),
+                                modifier = Modifier.testTag("live_upload_speed")
                             )
                         }
                         Text("Upload", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.testLiveFeedPulse() },
+                        modifier = Modifier
+                            .size(32.dp)
+                            .testTag("test_live_feed_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Test Live Network Feed",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                 }
             }

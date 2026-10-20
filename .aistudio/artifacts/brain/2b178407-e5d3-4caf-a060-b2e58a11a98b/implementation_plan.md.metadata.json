@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan to fix DataGuard website-tracking pipeline: complete TUN routing, user-space TCP/UDP packet forwarding relay, restart race resolution, TLS SNI reassembly, QUIC inspection, domain-suffix attribution, DNS TTL mapping, and lost update prevention.",
-  "updatedAt": "2026-10-17T08:11:21.305700081Z",
+  "summary": "Implementation plan for DataGuard addressing the 0.0.0.0 VPN routing clarification, background theme selection (Dark, White, System) in Settings, and moving the comprehensive data export feature with date range presets and custom calendar picker exclusively to the Websites tab.",
+  "updatedAt": "2026-10-19T20:04:39.236908319Z",
   "requestFeedback": true,
   "userFacing": true
 }
